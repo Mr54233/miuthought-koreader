@@ -251,7 +251,7 @@ function Sync.run(deps)
         unmatched_underlines = unmatched_underlines + (underlines_by_uid[tostring(row.uid)] or 0)
     end
 
-    if not step("inject", 0, 1, "生成划线版") then return nil, "已取消" end
+    if not step("inject", 0, 1) then return nil, "已取消" end
     -- 注入到中间文件(无 .epub 后缀,不会闪现在书架),成功后原子换位。
     local temp_dest = doc_path .. ".miuthought-new"
     local stats, inject_err = deps.inject(src, deps.book_id, mapped, temp_dest)

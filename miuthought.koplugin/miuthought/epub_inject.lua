@@ -19,6 +19,13 @@ local FONT_OBFUSCATION_ALGOS = {
     ["http://ns.adobe.com/pdf/enc#RC"] = true,
 }
 
+-- 本身已是压缩格式的条目,重打包时原样 store:再 deflate 只烧 CPU 不省空间,
+-- 图多的大书打包能明显提速。正文与其余条目保持 deflate。
+local STORED_EXTS = {
+    jpg = true, jpeg = true, png = true, gif = true, webp = true,
+    woff = true, woff2 = true, mp3 = true, m4a = true, mp4 = true, ogg = true,
+}
+
 function M.copy_path(src)
     src = tostring(src or "")
     local stem = src:match("^(.*)%.[eE][pP][uU][bB]$") or src
@@ -151,14 +158,17 @@ function M.inject_copy(src, book_id, chapters, opts)
     if meta.has[M.MARKER] then return nil, "该文件已是觅想版副本,请对原书执行注入" end
     if drm_blocked(meta, opts.archiver) then return nil, "该 EPUB 受 DRM 保护,无法注入想法" end
 
-    -- 先算好每章的注入结果,全部成功后才写包。
-    local targets, stats = {}, {
+    -- 预归组:这里只做 href 匹配,把章节按目标文件分组;正文读取与划线定位
+    -- 推迟到写包循环里逐文件就地进行,注好立刻写出释放。绝不把全部注入结果
+    -- 攥在内存里——真机教训:剑来映射改进后目标文件数翻了几倍,数百个渲染
+    -- 结果同时驻留,把 256MB 设备上的子进程直接压进内核 OOM(SIGKILL,
+    -- 异常退出且无结果文件)。
+    local stats = {
         injected = 0, marks = 0, unmatched = {},
         quote_aligned = 0, numeric = 0, dropped = 0, overlapped = 0, unlocated = 0,
         merges = {},
     }
-    local marker_chapters = {}
-    local injected_uids = {}
+    local groups, group_count = {}, 0
     local total_underlines = 0
     for _, ch in ipairs(chapters or {}) do
         total_underlines = total_underlines + #(ch.underlines or {})
@@ -167,48 +177,17 @@ function M.inject_copy(src, book_id, chapters, opts)
             -- 未匹配或后缀歧义,不能安静吞掉。
             stats.unmatched[#stats.unmatched + 1] = tostring(ch.chapter_uid or ch.href or "?")
         else
-            -- 多个微信章节可以落在同一 spine 文件:在前面章节的注入结果上叠加。
-            local overlay = targets[entry_path] ~= nil
-            local base = targets[entry_path]
-            if not base then
-                local html, read_err = EpubReader.read(meta, entry_path, opts.archiver)
-                if not html then return nil, read_err end
-                base = html
+            local rows = groups[entry_path]
+            if not rows then
+                rows = {}
+                groups[entry_path] = rows
+                group_count = group_count + 1
             end
-            local data = chapter_data(book_id, ch)
-            -- 叠加章节的 range 是微信侧章节内偏移,对合并文件毫无意义:
-            -- 引文对齐不中就丢弃,绝不允许数字兜底把划线画进别章正文。
-            -- 拆分章(quote_only,一微信章注入多文件)同理:各文件只收
-            -- 引文对齐得上的划线,防错位防跨文件重复。
-            if overlay or ch.quote_only then data.no_numeric_fallback = true end
-            local rendered, _, ch_stats = Annotations:new(nil):apply(base, data)
-            local mark_count = count_marks(rendered, data.underlines, base)
-            stats.quote_aligned = stats.quote_aligned + (ch_stats.quote_aligned or 0)
-            stats.numeric = stats.numeric + (ch_stats.numeric or 0)
-            stats.dropped = stats.dropped + (ch_stats.dropped or 0)
-            stats.overlapped = stats.overlapped + (ch_stats.overlapped or 0)
-            stats.unlocated = stats.unlocated + (ch_stats.unlocated or 0)
-            for _, merge in ipairs(ch_stats.merged or {}) do
-                stats.merges[#stats.merges + 1] = {
-                    uid = data.chapter_uid, from = merge.from, into = merge.into,
-                }
-            end
-            if mark_count > 0 then
-                targets[entry_path] = ensure_style(rendered)
-                -- 拆分章会产生同 uid 多行,injected 按「有锚点落书的微信章」去重计数。
-                if not injected_uids[data.chapter_uid] then
-                    injected_uids[data.chapter_uid] = true
-                    stats.injected = stats.injected + 1
-                end
-                stats.marks = stats.marks + mark_count
-                marker_chapters[#marker_chapters + 1] = {
-                    uid = data.chapter_uid, href = entry_path, marks = mark_count,
-                }
-            end
+            rows[#rows + 1] = ch
         end
     end
-    if stats.injected == 0 then
-        if total_underlines == 0 then return nil, "没有划线数据,无需生成副本" end
+    if total_underlines == 0 then return nil, "没有划线数据,无需生成副本" end
+    if group_count == 0 then
         return nil, string.format("没有可注入的章节(未匹配 %d 章,定位失败 %d 条划线)",
             #stats.unmatched, stats.dropped)
     end
@@ -242,35 +221,95 @@ function M.inject_copy(src, book_id, chapters, opts)
         return fail("写入副本失败:mimetype")
     end
     writer:setZipCompression("deflate")
+    local compression = "deflate"
 
     -- 单遍流式复制:迭代中就地提取当前条目(与 archiveviewer 的 extractAll 同款),
-    -- 避免每条目重开重扫整包。
+    -- 避免每条目重开重扫整包;命中注入目标的文件此刻套锚点,写完立即释放。
     reader = mod.Reader:new()
     if not reader:open(src) then
         reader = nil
         return fail("无法打开 EPUB:" .. tostring(src))
     end
+    local marker_chapters = {}
+    local injected_uids = {}
+    local total_entries = #meta.names
+    local seen_entries = 0
     local written = {["mimetype"] = true, [M.MARKER] = true}
     for entry in reader:iterate() do
-        if entry.mode == "file" and not written[entry.path] then
-            written[entry.path] = true
-            local content = targets[entry.path] or reader:extractToMemory(entry.path)
-            if not content then
-                local read_err = reader.err
-                return fail("无法读取 EPUB 条目:" .. entry.path
-                    .. (read_err and ("(" .. read_err .. ")") or ""))
+        if entry.mode == "file" then
+            seen_entries = seen_entries + 1
+            if not written[entry.path] then
+                written[entry.path] = true
+                local content = reader:extractToMemory(entry.path)
+                if not content then
+                    local read_err = reader.err
+                    return fail("无法读取 EPUB 条目:" .. entry.path
+                        .. (read_err and ("(" .. read_err .. ")") or ""))
+                end
+                local rows = groups[entry.path]
+                if rows then
+                    -- 多个微信章节可以落在同一 spine 文件:在前面章节的注入结果上叠加。
+                    local injected_before = false
+                    for _, ch in ipairs(rows) do
+                        local data = chapter_data(book_id, ch)
+                        -- 叠加章节的 range 是微信侧章节内偏移,对合并文件毫无意义:
+                        -- 引文对齐不中就丢弃,绝不允许数字兜底把划线画进别章正文。
+                        -- 拆分章(quote_only,一微信章注入多文件)同理:各文件只收
+                        -- 引文对齐得上的划线,防错位防跨文件重复。
+                        if injected_before or ch.quote_only then data.no_numeric_fallback = true end
+                        local rendered, _, ch_stats = Annotations:new(nil):apply(content, data)
+                        local mark_count = count_marks(rendered, data.underlines, content)
+                        stats.quote_aligned = stats.quote_aligned + (ch_stats.quote_aligned or 0)
+                        stats.numeric = stats.numeric + (ch_stats.numeric or 0)
+                        stats.dropped = stats.dropped + (ch_stats.dropped or 0)
+                        stats.overlapped = stats.overlapped + (ch_stats.overlapped or 0)
+                        stats.unlocated = stats.unlocated + (ch_stats.unlocated or 0)
+                        for _, merge in ipairs(ch_stats.merged or {}) do
+                            stats.merges[#stats.merges + 1] = {
+                                uid = data.chapter_uid, from = merge.from, into = merge.into,
+                            }
+                        end
+                        if mark_count > 0 then
+                            content = ensure_style(rendered)
+                            injected_before = true
+                            -- 拆分章会产生同 uid 多行,injected 按「有锚点落书的微信章」去重计数。
+                            if not injected_uids[data.chapter_uid] then
+                                injected_uids[data.chapter_uid] = true
+                                stats.injected = stats.injected + 1
+                            end
+                            stats.marks = stats.marks + mark_count
+                            marker_chapters[#marker_chapters + 1] = {
+                                uid = data.chapter_uid, href = entry.path, marks = mark_count,
+                            }
+                        end
+                    end
+                end
+                local ext = entry.path:match("%.(%w+)$")
+                local want = (not rows) and ext and STORED_EXTS[ext:lower()] and "store" or "deflate"
+                if want ~= compression then
+                    writer:setZipCompression(want)
+                    compression = want
+                end
+                if not writer:addFileFromMemory(entry.path, content, mtime) then
+                    return fail("写入副本失败:" .. entry.path)
+                end
+                if opts.progress then pcall(opts.progress, entry.path, seen_entries, total_entries) end
+                content = nil
+                collectgarbage("step", 200)
             end
-            if not writer:addFileFromMemory(entry.path, content, mtime) then
-                return fail("写入副本失败:" .. entry.path)
-            end
-            if opts.progress then pcall(opts.progress, entry.path) end
-            content = nil
-            collectgarbage("step", 200)
         end
     end
     reader:close()
     reader = nil
 
+    if stats.injected == 0 then
+        writer:close()
+        os.remove(tmp)
+        return nil, string.format("没有可注入的章节(未匹配 %d 章,定位失败 %d 条划线)",
+            #stats.unmatched, stats.dropped)
+    end
+
+    if compression ~= "deflate" then writer:setZipCompression("deflate") end
     if not writer:addFileFromMemory(M.MARKER, Json.encode({
         version = 1, book_id = tostring(book_id or ""), created = mtime,
         source = src, chapters = marker_chapters,

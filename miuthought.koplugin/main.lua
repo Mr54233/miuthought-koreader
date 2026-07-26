@@ -546,7 +546,9 @@ function Plugin:_finish_sync(runtime,result)
         self:toast("同步已取消;已拉取章节保留在断点,下次同步会续传",4)
         return
     end
-    self:_sync_fail("同步未完成:\n"..U.first_line(err,220).."\n\n已拉取章节保存在断点缓存,再次同步会继续。")
+    -- 子进程的错误消息不少已自带断点提示,别再拼一遍(真机截图出过双重提示)。
+    local hint=err:find("断点",1,true) and "" or "\n\n已拉取章节保存在断点缓存,再次同步会继续。"
+    self:_sync_fail("同步未完成:\n"..U.first_line(err,220)..hint)
 end
 
 function Plugin:_recover_sync_state()

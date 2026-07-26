@@ -17,6 +17,7 @@ local function book_files()
         {path = "OEBPS/content.opf", content = OPF},
         {path = "OEBPS/Text/ch1.xhtml", content = CH1},
         {path = "OEBPS/Text/ch2.xhtml", content = CH2},
+        {path = "OEBPS/Images/cover.png", content = "PNG-FAKE-BYTES"},
     }
 end
 
@@ -44,7 +45,10 @@ T.case("copy_path 命名", function()
 end)
 
 T.case("端到端注入", function()
-    local stats, err, Arc, renames = run_inject(book_files(), CHAPTERS)
+    local prog = {}
+    local stats, err, Arc, renames = run_inject(book_files(), CHAPTERS, nil, {
+        progress = function(name, i, n) prog[#prog + 1] = {name = name, i = i, n = n} end,
+    })
     T.ok(stats, "inject_copy 应成功: " .. tostring(err))
     T.eq(stats.injected, 1, "注入 1 章")
     T.ok(stats.marks >= 1, "至少 1 处锚点")
@@ -66,6 +70,16 @@ T.case("端到端注入", function()
     T.ok(ch1.content:find('id="miuread-annotation-style"', 1, true), "内联样式注入 head")
     T.ok(ch1.content:find("</title>", 1, true) and ch1.content:find("春江潮水", 1, true), "原结构保留")
     T.eq(by_path["OEBPS/Text/ch2.xhtml"].content, CH2, "未涉及章节逐字节原样")
+    T.eq(by_path["OEBPS/Images/cover.png"].compression, "store", "已压缩媒体原样 store")
+    T.eq(by_path["OEBPS/Images/cover.png"].content, "PNG-FAKE-BYTES", "媒体内容逐字节原样")
+    T.eq(by_path[EpubInject.MARKER].compression, "deflate", "媒体 store 之后 marker 回到 deflate")
+
+    T.ok(#prog >= 4, "逐条目进度回调发生")
+    T.eq(prog[#prog].i, 6, "计数走到最后一个条目")
+    T.eq(prog[#prog].n, 6, "总数=全部 zip 条目")
+    for k = 2, #prog do
+        T.ok(prog[k].i > prog[k - 1].i, "进度计数单调递增")
+    end
 
     local marker = by_path[EpubInject.MARKER]
     T.ok(marker, "marker 条目存在")

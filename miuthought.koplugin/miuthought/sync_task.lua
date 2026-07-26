@@ -133,6 +133,7 @@ function SyncTask:descriptor()
         pid=job.pid,progress_path=job.progress_path,result_path=job.result_path,
         cancel_path=job.cancel_path,worker_settings_path=job.worker_settings_path,
         started_at=job.started_at,owner_token=self.owner_token,task_token=job.task_token,
+        mode=job.mode,
     }
 end
 
@@ -297,8 +298,15 @@ function SyncTask:_poll()
         if idle>=120 and not job.waiting_notified then
             job.waiting_notified=true
             local state=U.copy(job.last_progress_state or {})
-            state.waiting_network=true
-            state.message="等待网络或服务器响应"
+            -- 停顿提示按阶段说话:只有真会走网络的阶段才提网络;映射/注入是
+            -- 纯本地计算,离线重注更是全程零网络,措辞不能撒谎误导排查。
+            local stage=tostring(state.stage or "")
+            if job.mode~="reinject" and (stage=="chapters" or stage=="fetch") then
+                state.waiting_network=true
+                state.message="等待网络或服务器响应"
+            else
+                state.message="仍在处理,进度长时间未更新"
+            end
             state.updated_at=now
             if job.on_progress then job.on_progress(state) end
         end
@@ -349,7 +357,7 @@ function SyncTask:attach(descriptor,on_progress,on_done)
         cancel_path=descriptor.cancel_path,worker_settings_path=descriptor.worker_settings_path,
         on_progress=on_progress,on_done=on_done,last_progress_raw=nil,last_progress_state=nil,
         last_progress_at=nil,last_keepalive=0,started_at=descriptor.started_at,dead_seen_at=nil,waiting_notified=false,
-        task_token=descriptor.task_token,
+        task_token=descriptor.task_token,mode=descriptor.mode,
     }
     self.backgrounded=true
     self:_read_progress(self.job)
@@ -572,9 +580,22 @@ function SyncTask:start(task, on_progress, on_done)
                 save_thoughts = function(bid, uid, groups) return Thoughts.save(store, bid, uid, groups) end,
                 merge_thoughts = function(bid, uid, from, into) return Thoughts.merge(store, bid, uid, from, into) end,
                 inject = function(src, bid, mapped, dest)
-                    return EpubInject.inject_copy(src, bid, mapped, {dest = dest, progress = function(name)
-                        heartbeat("inject", tostring(name or ""), 0.90)
-                    end})
+                    -- 写包按条目回报(2 秒节流):大书注入+压缩要跑几分钟,
+                    -- 百分比与文件计数都得动;心跳同时喂饱父进程的停顿检测,
+                    -- 免得纯本地打包被误报成「等待网络」。
+                    local last_emit = 0
+                    return EpubInject.inject_copy(src, bid, mapped, {dest = dest,
+                        progress = function(_, done, total)
+                            local now2 = os.time()
+                            if now2 - last_emit < 2 then return end
+                            last_emit = now2
+                            local pct = 0.90
+                            if tonumber(done) and tonumber(total) and total > 0 then
+                                pct = 0.90 + math.min(done / total, 1) * 0.09
+                            end
+                            emit{stage = "inject", current = tonumber(done),
+                                total = tonumber(total), percent = pct}
+                        end})
                 end,
                 fetch_budget = mode ~= "reinject" and batch_limit or nil,
                 map_cache_path = cache_dir .. "/map.json",
@@ -653,6 +674,7 @@ function SyncTask:start(task, on_progress, on_done)
         dead_seen_at = nil,
         waiting_notified = false,
         task_token = task_token,
+        mode = mode,
         started_at = os.time(),
     }
     self:_claim(pid)

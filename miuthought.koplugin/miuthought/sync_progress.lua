@@ -164,7 +164,7 @@ function SyncProgress:set_state(state)
         resume = "恢复同步断点",
         fetch = "拉取划线与想法",
         map = "匹配本地章节",
-        inject = "生成觅想版副本",
+        inject = "生成划线版并替换原书",
         done = "同步完成",
         error = "同步失败",
         cancelled = "同步已取消",
@@ -176,6 +176,9 @@ function SyncProgress:set_state(state)
     elseif total > 0 and state.stage == "map" then
         rows[#rows + 1] = "正文文件 " .. tostring(current) .. " / " .. tostring(total)
         if total > 200 then rows[#rows + 1] = "大型书籍的文本匹配需要较长时间,请耐心等待" end
+    elseif total > 0 and current > 0 and state.stage == "inject" then
+        rows[#rows + 1] = "写入文件 " .. tostring(current) .. " / " .. tostring(total)
+        if total > 200 then rows[#rows + 1] = "大型书籍的注入与压缩需要几分钟,请耐心等待" end
     end
     if state.chapter and state.chapter ~= "" then rows[#rows + 1] = clean_status(state.chapter, 120) end
     if state.message and state.message ~= "" then rows[#rows + 1] = clean_status(state.message, 180) end
