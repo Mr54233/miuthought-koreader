@@ -523,7 +523,7 @@ function Plugin:_sync_report(report)
         "",
         string.format("章节:%d/%d 有划线,注入 %d 章",
             report.chapters_with_data,report.chapters_total,report.injected),
-        string.format("锚点:%d 处(引文对齐 %d,定位失败 %d)",
+        string.format("锚点:%d 处(引文对齐 %d,跳过 %d——重叠去重/未定位)",
             report.marks or 0,report.quote_aligned or 0,report.dropped or 0),
         string.format("想法缓存:%d 章",report.thoughts_saved or 0),
     }

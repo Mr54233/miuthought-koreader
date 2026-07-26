@@ -52,6 +52,22 @@ end
 
 -- 参与投票的引文至少 12 字节(约 4 个汉字):太短的句子在多个文件里都会出现,只会投错票。
 local MIN_QUOTE_BYTES = 12
+-- 引文只取前缀窗口:微信对长引文的 abstract 会做中段省略/跨段拼接,
+-- 整条拿去匹配必失败(真机实证 573-1314 字节的引文全部 0 命中,
+-- 截前 90 字节后恢复命中);省略点几乎不出现在开头,前缀最保真。
+local MAX_QUOTE_BYTES = 90
+
+local function utf8_prefix(text, max_bytes)
+    if #text <= max_bytes then return text end
+    local cut = max_bytes
+    -- 退到完整 UTF-8 字符边界:下一字节若是续字节(0x80-0xBF)说明切在字符中间。
+    while cut > 1 do
+        local next_byte = text:byte(cut + 1)
+        if not next_byte or next_byte < 0x80 or next_byte >= 0xC0 then break end
+        cut = cut - 1
+    end
+    return text:sub(1, cut)
+end
 
 function ChapterMap.quotes_of(underlines, limit)
     limit = tonumber(limit) or 5
@@ -59,7 +75,7 @@ function ChapterMap.quotes_of(underlines, limit)
     for _, row in ipairs(underlines or {}) do
         if type(row) == "table" then
             for _, key in ipairs({"markText", "bookmarkText", "rangeText", "abstract", "text", "content"}) do
-                local quote = ChapterMap.normalize(scalar_str(row[key]))
+                local quote = utf8_prefix(ChapterMap.normalize(scalar_str(row[key])), MAX_QUOTE_BYTES)
                 if #quote >= MIN_QUOTE_BYTES and not seen[quote] then
                     seen[quote] = true
                     out[#out + 1] = quote

@@ -54,6 +54,19 @@ T.case("标题兜底避开目录页", function()
     T.eq(mapped[2].href, "c2.xhtml", "第二章不落目录页")
 end)
 
+T.case("巨型省略引文按前缀窗口匹配", function()
+    -- 模拟微信 abstract:前 40 字与正文一致,中段被省略拼接后整条在书里不存在。
+    local head = string.rep("春江潮水连海平海上明月共潮生", 4)
+    local broken_quote = head .. string.rep("这段被省略拼接后书里没有", 20)
+    local files = {["c1.xhtml"] = "<html><body><p>" .. head .. "滟滟随波千万里。</p></body></html>"}
+    local quotes = ChapterMap.quotes_of({{range = "0-9", markText = broken_quote}})
+    T.ok(#quotes[1] <= 90, "引文截断到前缀窗口: len=" .. #quotes[1])
+    local mapped = ChapterMap.build({{href = "c1.xhtml"}}, function(h) return files[h] end, {
+        {uid = "1", title = "短", underlines = {{range = "0-9", markText = broken_quote}}},
+    })
+    T.eq(#mapped, 1, "前缀命中,整章不再因巨型引文失配")
+end)
+
 T.case("投票平票视为歧义转兜底", function()
     local files = {
         ["a.xhtml"] = "<html><body><p>两个文件都有的同一段引文内容。甲文件专属段落。</p></body></html>",
