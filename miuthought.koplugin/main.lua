@@ -148,15 +148,17 @@ function Plugin:pick_book(title,on_pick)
         file_filter=function(filename) return tostring(filename):lower():match("%.epub$")~=nil end,
         onConfirm=function(path)
             -- PathChooser 的 Choose 回调是先跑 onConfirm、再连关确认框和全屏
-            -- 选择器;这里同步弹出的任何窗口都会被随后的关闭/重绘顶掉
-            -- (实测:进度框一闪就没,任务却还在跑)。推迟到下一轮事件循环,
-            -- 等选择器完全退场再执行后续流程。
+            -- 选择器;两层关闭各排一次全屏重绘,单推一拍弹的窗口仍会被第二波
+            -- 重绘顶掉(真机:操作面板一闪就回主页;进度框当初能活是因为
+            -- 同步流程内部又推了一拍)。统一连推两拍,等重绘全部落地。
             UIManager:nextTick(function()
-                if tostring(path):lower():find(".觅想.epub",1,true) then
-                    self:info("这是觅想版副本,请选择原书")
-                    return
-                end
-                on_pick(path)
+                UIManager:nextTick(function()
+                    if tostring(path):lower():find(".觅想.epub",1,true) then
+                        self:info("这是觅想版副本,请选择原书")
+                        return
+                    end
+                    on_pick(path)
+                end)
             end)
         end,
     }
