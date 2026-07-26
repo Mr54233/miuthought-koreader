@@ -109,6 +109,9 @@ function Plugin:reader_menu()
     items[#items+1]={text="绑定微信读书",callback=self:safe("bind",function() self:bind_book() end)}
     items[#items+1]={text="同步划线与想法",callback=self:safe("sync_thoughts",function() self:sync_thoughts() end)}
     local doc_path=self:current_doc_path()
+    if doc_path and self:_has_reinject_cache(doc_path) then
+        items[#items+1]={text="重新注入(用上次数据,离线)",callback=self:safe("reinject",function() self:sync_entry(doc_path,"reinject") end)}
+    end
     if doc_path and U.file_exists(doc_path..".orig") then
         items[#items+1]={text="还原原书(移除划线注入)",callback=self:safe("restore",function() self:restore_original() end)}
     end
@@ -309,32 +312,42 @@ function Plugin:sync_thoughts()
 end
 
 -- 统一同步入口:阅读器与文件管理器共用,path 为原书路径。
-function Plugin:sync_entry(path)
+-- mode="sync"(默认,全新拉取)| "reinject"(离线,用上次数据重注)。
+function Plugin:sync_entry(path,mode)
+    mode=mode or "sync"
     if self.sync_task and self.sync_task:busy() then self:_show_active_sync_dialog() return end
     if not tostring(path or ""):lower():match("%.epub$") then self:info("只支持 EPUB 格式的本地书") return end
     if not self:require_login() then return end
     local EpubReader=require("miuthought.epub_reader")
     local available,gate_err=EpubReader.available()
     if not available then self:info(tostring(gate_err)) return end
-    if not self:is_online() then self:info(_("Network unavailable")) return end
+    if mode~="reinject" and not self:is_online() then self:info(_("Network unavailable")) return end
     local bound=Binding.get(self.store,path)
     if not bound then
         -- 未绑定不再只报错:直接引导绑定,绑定完成后自动继续同步。
         UIManager:show(ConfirmBox:new{
             text="这本书还没绑定微信读书书目。\n先绑定,完成后自动开始同步?",
             ok_text="去绑定",
-            ok_callback=function() self:bind_search(path,function() self:sync_entry(path) end) end,
+            ok_callback=function() self:bind_search(path,function() self:sync_entry(path,mode) end) end,
             cancel_text="取消",
         })
         return
     end
     if self.sync_task and self.sync_task:available() then
-        self:_start_sync_task(path,bound)
+        self:_start_sync_task(path,bound,mode)
+    elseif mode=="reinject" then
+        self:info("此设备不支持离线重注(缺少子进程支持),请直接同步")
     else
         -- 极少数不支持子进程的平台:退回前台 Trapper 流程。
         local Trapper=require("ui/trapper")
         Trapper:wrap(function() self:_sync_run(path,bound) end)
     end
+end
+
+function Plugin:_has_reinject_cache(path)
+    local bound=path and Binding.get(self.store,path)
+    if not bound then return false end
+    return U.file_exists(self.store:book_cache_path(bound.book_id).."/sync-cache/.completed")
 end
 
 -- ===== 后台同步任务运行时 =====
@@ -347,11 +360,11 @@ end
 
 function Plugin:_clear_sync_state() self.store:set("sync_runtime",{}) end
 
-function Plugin:_start_sync_task(path,bound)
+function Plugin:_start_sync_task(path,bound,mode)
     local title=U.trim(tostring(bound.title or ""))
     if title=="" then title=self:doc_title_guess(path) end
     local runtime={doc_path=path,book_id=bound.book_id,title=title,started_at=os.time(),dialog=nil,background=false}
-    local ok,err=self.sync_task:start({doc_path=path,book_id=bound.book_id,title=title},
+    local ok,err=self.sync_task:start({doc_path=path,book_id=bound.book_id,title=title,mode=mode},
         function(state) self:_on_sync_progress(runtime,state) end,
         function(result) self:_finish_sync(runtime,result) end)
     if not ok then self:info("无法启动后台同步:\n"..tostring(err)) return end

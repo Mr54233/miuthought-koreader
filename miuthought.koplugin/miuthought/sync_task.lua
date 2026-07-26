@@ -395,6 +395,9 @@ function SyncTask:start(task, on_progress, on_done)
     local doc_path = tostring(task.doc_path or "")
     local book_id = tostring(task.book_id or "")
     local doc_title = tostring(task.title or "")
+    -- mode: "sync"=全新拉取(完成过的旧缓存先清);"reinject"=纯离线,
+    -- 只用上次拉取的数据重跑映射+注入,零网络。
+    local mode = tostring(task.mode or "sync")
     self.keep_awake_enabled = self.store:preferences().sync_keep_awake ~= false
 
     local child = function()
@@ -444,10 +447,36 @@ function SyncTask:start(task, on_progress, on_done)
                     chapter = fetch_now.title, percent = percent, message = message}
             end
 
-            -- 断点缓存:每章拉取结果落盘;命中即跳过网络。
+            -- 断点/复用缓存:每章拉取结果落盘。
+            -- 成功的同步以 .completed 标记收尾并保留数据(供离线重注);
+            -- 全新同步看到标记即清空重拉(同步=拿新的);无标记=中断残留,续传。
             local cache_dir = store:book_dir(book_id) .. "/sync-cache"
             UChild.mkdir(cache_dir)
+            local completed_marker = cache_dir .. "/.completed"
+            if mode ~= "reinject" and UChild.file_exists(completed_marker) then
+                UChild.remove_tree(cache_dir)
+                UChild.mkdir(cache_dir)
+            end
             local function cache_path(uid) return cache_dir .. "/" .. UChild.id_name(uid) .. ".json" end
+            local chapters_cache_path = cache_dir .. "/chapters.json"
+            -- 章节列表也入缓存,离线重注才能完全不碰网络。
+            local api_for_sync = {
+                chapters = function(_, bid)
+                    if mode == "reinject" then
+                        local raw = UChild.read_file(chapters_cache_path, true)
+                        if not raw then error("没有上次的同步数据,请先完整同步一次") end
+                        local ok_decode, decoded = pcall(JsonChild.decode, raw)
+                        if not ok_decode or type(decoded) ~= "table" then
+                            error("上次同步数据损坏,请重新完整同步")
+                        end
+                        return decoded
+                    end
+                    local data = api:chapters(bid)
+                    local ok_encode, encoded = pcall(JsonChild.encode, serializable_copy(data))
+                    if ok_encode then UChild.atomic_write(chapters_cache_path, encoded, true) end
+                    return data
+                end,
+            }
             local function fetch_percent()
                 return 0.03 + (fetch_now.n > 0 and (fetch_now.i - 1) / fetch_now.n or 0) * 0.77
             end
@@ -470,6 +499,15 @@ function SyncTask:start(task, on_progress, on_done)
                             data.resumed = true
                             return data
                         end
+                    end
+                    if mode == "reinject" then
+                        -- 离线重注绝不碰网络:完成过的缓存应覆盖全部章节,缺=异常。
+                        return {
+                            book_id = tostring(bid), chapter_uid = tostring(uid),
+                            underlines = {}, review_map = {}, review_groups = {},
+                            underline_count = 0, thought_count = 0, thought_entry_count = 0,
+                            errors = {"离线重注:缓存缺少该章"}, underline_request_ok = false,
+                        }
                     end
                     local data = fetcher:fetch_chapter(bid, uid, function(stage2, i2, n2, extra)
                         if stage2 == "thoughts" then
@@ -517,7 +555,7 @@ function SyncTask:start(task, on_progress, on_done)
             local report, sync_err = Sync.run{
                 doc_path = doc_path,
                 book_id = book_id,
-                api = api,
+                api = api_for_sync,
                 annotations = cached_annotations,
                 load_meta = function(p) return EpubReader.load(p) end,
                 read_text = function(m, href) return (EpubReader.read(m, href)) end,
@@ -542,8 +580,9 @@ function SyncTask:start(task, on_progress, on_done)
                 end,
             }
             if not report then error(sync_err or "同步失败") end
-            -- 成功完成才清断点缓存;取消/失败都保留给下次续传。
-            UChild.remove_tree(cache_dir)
+            -- 成功:保留缓存供「离线重新注入」,打上完成标记;
+            -- 下次全新同步看到标记会先清空重拉。取消/失败不打标记=续传。
+            UChild.atomic_write(completed_marker, tostring(os.time()), true)
             return {report = report, auth = store:auth()}
         end, debug.traceback)
 
