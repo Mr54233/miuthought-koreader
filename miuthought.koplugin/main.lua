@@ -19,6 +19,8 @@ local Cookies=require("miuthought.cookies")
 local Thoughts=require("miuthought.thoughts")
 local ThoughtPopup=require("miuthought.thought_popup")
 local Binding=require("miuthought.binding")
+local SyncTask=require("miuthought.sync_task")
+local SyncProgress=require("miuthought.sync_progress")
 local _=Text.tr
 local unpack_args=unpack or table.unpack
 local source=debug.getinfo(1,"S").source:gsub("^@",""); local ROOT=source:match("^(.*)/main%.lua$") or "."
@@ -46,6 +48,8 @@ function Plugin:init()
     self.annotations=Annotations:new(self.api)
     self.auth_flow=Auth:new(self.http,self.store,self)
     self.updater=Updater:new(self.http,self.store,self.version,ROOT)
+    self.sync_task=SyncTask:new(self.store)
+    UIManager:scheduleIn(0.8,function() self:_recover_sync_state() end)
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
     local state=self.updater:startup()
@@ -79,27 +83,35 @@ end
 function Plugin:logged_in() local a=self.store:auth(); return a.api_key~="" and next(a.cookies or {})~=nil end
 function Plugin:require_login() if not self:logged_in() then self:info(_("Not logged in")); return false end return true end
 
+function Plugin:_sync_status_item()
+    if not (self.sync_task and self.sync_task:busy()) then return nil end
+    return {text="同步进行中…(点按查看进度)",callback=self:safe("sync_status",function() self:_show_active_sync_dialog() end)}
+end
+
 function Plugin:home_menu()
-    return {
-        {text="选择书籍同步想法",callback=self:safe("fm_sync",function()
-            self:pick_book("选择要同步的 EPUB(长按文件名选中)",function(path) self:sync_entry(path) end)
-        end)},
-        {text="选择书籍绑定微信读书",callback=self:safe("fm_bind",function()
-            self:pick_book("选择要绑定的 EPUB(长按文件名选中)",function(path) self:bind_book(path) end)
-        end)},
-        {text="账户",sub_item_table_func=function() return self:account_menu() end},
-        {text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end},
-    }
+    local items={}
+    items[#items+1]=self:_sync_status_item()
+    items[#items+1]={text="选择书籍同步想法",callback=self:safe("fm_sync",function()
+        self:pick_book("选择要同步的 EPUB(长按文件名选中)",function(path) self:sync_entry(path) end)
+    end)}
+    items[#items+1]={text="选择书籍绑定微信读书",callback=self:safe("fm_bind",function()
+        self:pick_book("选择要绑定的 EPUB(长按文件名选中)",function(path) self:bind_book(path) end)
+    end)}
+    items[#items+1]={text="账户",sub_item_table_func=function() return self:account_menu() end}
+    items[#items+1]={text="设置",sub_item_table_func=function() return self:settings_menu() end}
+    items[#items+1]={text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end}
+    return items
 end
 
 function Plugin:reader_menu()
-    return {
-        {text="绑定微信读书",callback=self:safe("bind",function() self:bind_book() end)},
-        {text="同步划线与想法",callback=self:safe("sync_thoughts",function() self:sync_thoughts() end)},
-        {text="账户",sub_item_table_func=function() return self:account_menu() end},
-        {text="设置",sub_item_table_func=function() return self:settings_menu() end},
-        {text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end},
-    }
+    local items={}
+    items[#items+1]=self:_sync_status_item()
+    items[#items+1]={text="绑定微信读书",callback=self:safe("bind",function() self:bind_book() end)}
+    items[#items+1]={text="同步划线与想法",callback=self:safe("sync_thoughts",function() self:sync_thoughts() end)}
+    items[#items+1]={text="账户",sub_item_table_func=function() return self:account_menu() end}
+    items[#items+1]={text="设置",sub_item_table_func=function() return self:settings_menu() end}
+    items[#items+1]={text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end}
+    return items
 end
 
 -- 文件管理器里直接选一本 EPUB,不必先打开书。
@@ -223,6 +235,13 @@ end
 function Plugin:settings_menu()
     return {
         {text="想法弹窗字体",sub_item_table_func=function() return self:thought_font_menu() end},
+        {text="同步时保持唤醒(防锁屏中断)",checked_func=function()
+            return self.store:preferences().sync_keep_awake~=false
+        end,callback=function()
+            local p=self.store:preferences()
+            p.sync_keep_awake=(p.sync_keep_awake~=false) and false or true
+            self.store:save_preferences(p)
+        end},
     }
 end
 
@@ -275,20 +294,16 @@ function Plugin:onShowMiuThought()
 end
 
 -- ===== 同步划线与想法 =====
--- 阅读器入口:同步会占住界面,先说清楚,并指路文件管理器流程。
+-- 阅读器入口:后台任务同步,不影响继续阅读。
 function Plugin:sync_thoughts()
     local path=self:current_doc_path()
     if not path then self:info("请先打开一本本地书") return end
-    UIManager:show(ConfirmBox:new{
-        text="同步期间将显示进度,无法翻页(点按屏幕可取消)。\n\n也可以不打开书:在文件管理器的觅想菜单里直接选书同步,同步完再阅读副本。",
-        ok_text="开始同步",
-        ok_callback=function() self:sync_entry(path) end,
-        cancel_text="取消",
-    })
+    self:sync_entry(path)
 end
 
 -- 统一同步入口:阅读器与文件管理器共用,path 为原书路径。
 function Plugin:sync_entry(path)
+    if self.sync_task and self.sync_task:busy() then self:_show_active_sync_dialog() return end
     if not tostring(path or ""):lower():match("%.epub$") then self:info("只支持 EPUB 格式的本地书") return end
     if not self:require_login() then return end
     local EpubReader=require("miuthought.epub_reader")
@@ -306,8 +321,135 @@ function Plugin:sync_entry(path)
         })
         return
     end
-    local Trapper=require("ui/trapper")
-    Trapper:wrap(function() self:_sync_run(path,bound) end)
+    if self.sync_task and self.sync_task:available() then
+        self:_start_sync_task(path,bound)
+    else
+        -- 极少数不支持子进程的平台:退回前台 Trapper 流程。
+        local Trapper=require("ui/trapper")
+        Trapper:wrap(function() self:_sync_run(path,bound) end)
+    end
+end
+
+-- ===== 后台同步任务运行时 =====
+function Plugin:_persist_sync_state(runtime)
+    self.store:set("sync_runtime",{
+        status="active",doc_path=runtime.doc_path,book_id=runtime.book_id,title=runtime.title,
+        task=runtime.task,started_at=runtime.started_at,
+    })
+end
+
+function Plugin:_clear_sync_state() self.store:set("sync_runtime",{}) end
+
+function Plugin:_start_sync_task(path,bound)
+    local title=U.trim(tostring(bound.title or ""))
+    if title=="" then title=self:doc_title_guess(path) end
+    local runtime={doc_path=path,book_id=bound.book_id,title=title,started_at=os.time(),dialog=nil,background=false}
+    local ok,err=self.sync_task:start({doc_path=path,book_id=bound.book_id,title=title},
+        function(state) self:_on_sync_progress(runtime,state) end,
+        function(result) self:_finish_sync(runtime,result) end)
+    if not ok then self:info("无法启动后台同步:\n"..tostring(err)) return end
+    runtime.task=self.sync_task:descriptor()
+    self._sync_runtime=runtime
+    self:_persist_sync_state(runtime)
+    self:_show_active_sync_dialog()
+end
+
+function Plugin:_on_sync_progress(runtime,state)
+    if self._sync_runtime~=runtime then return end
+    runtime.last_state=U.copy(state or {})
+    if runtime.dialog then runtime.dialog:set_state(state) end
+end
+
+function Plugin:_close_sync_dialog()
+    local runtime=self._sync_runtime
+    local dialog=runtime and runtime.dialog
+    if not dialog then return end
+    runtime.dialog=nil
+    pcall(function() dialog:close() end)
+end
+
+function Plugin:_send_sync_to_background()
+    local runtime=self._sync_runtime
+    if not runtime or not self.sync_task:busy() then return end
+    runtime.background=true
+    self:_close_sync_dialog()
+    self.sync_task:set_backgrounded(true)
+    self:toast("同步已转入后台,可继续阅读;完成后会提示",3)
+end
+
+function Plugin:_show_active_sync_dialog()
+    local runtime=self._sync_runtime
+    if not runtime or not self.sync_task or not self.sync_task:busy() then
+        self:info("当前没有进行中的同步任务")
+        return
+    end
+    if runtime.dialog then return end
+    runtime.background=false
+    self.sync_task:set_backgrounded(false)
+    local dialog
+    dialog=SyncProgress:new{
+        title="正在同步《"..tostring(runtime.title or "未命名").."》",
+        on_cancel=function() if self.sync_task then self.sync_task:cancel() end end,
+        on_background=function() self:_send_sync_to_background() end,
+    }
+    runtime.dialog=dialog
+    dialog:show()
+    if runtime.last_state then dialog:set_state(runtime.last_state) end
+end
+
+function Plugin:_merge_sync_auth(result)
+    if type(result.auth)~="table" then return end
+    -- 子进程用隔离设置副本,期间刷新的 cookie 要合并回主设置。
+    self.store:reload()
+    local current=self.store:auth()
+    local merged=U.copy(current.cookies or {})
+    for name,value in pairs(result.auth.cookies or {}) do merged[name]=value end
+    current.cookies=Cookies.sanitize(merged)
+    if tostring(result.auth.api_key or "")~="" then current.api_key=result.auth.api_key end
+    self.store:save_auth(current)
+end
+
+function Plugin:_finish_sync(runtime,result)
+    if self._sync_runtime~=runtime then return end
+    self:_close_sync_dialog()
+    self.sync_task:set_backgrounded(false)
+    self._sync_runtime=nil
+    self:_clear_sync_state()
+    result=result or {}
+    self:_merge_sync_auth(result)
+    if result.ok==true and type(result.report)=="table" then
+        Thoughts.clear_memory_cache()
+        self:_sync_report(result.report)
+        return
+    end
+    local err=tostring(result.error or "未知错误")
+    if result.cancelled or err=="同步已取消" then
+        self:toast("同步已取消;已拉取章节保留在断点,下次同步会续传",4)
+        return
+    end
+    self:_sync_fail("同步未完成:\n"..U.first_line(err,220).."\n\n已拉取章节保存在断点缓存,再次同步会继续。")
+end
+
+function Plugin:_recover_sync_state()
+    local state=self.store:get("sync_runtime",{})
+    if state.status~="active" or type(state.task)~="table" then return end
+    local runtime={doc_path=state.doc_path,book_id=state.book_id,title=state.title,
+        started_at=state.started_at,task=state.task,dialog=nil,background=true}
+    self._sync_runtime=runtime
+    local ok,err=self.sync_task:attach(state.task,
+        function(progress) self:_on_sync_progress(runtime,progress) end,
+        function(result) self:_finish_sync(runtime,result) end)
+    if ok then
+        self.sync_task:set_backgrounded(true)
+        logger.info("[MiuThought][Sync] 后台同步已接管","pid=",tostring(state.task.pid))
+        return
+    end
+    self._sync_runtime=nil
+    self:_clear_sync_state()
+    logger.info("[MiuThought][Sync] 上次同步已中断",tostring(err))
+    UIManager:scheduleIn(1.5,function()
+        self:toast("上次同步已中断,断点已保留;再次同步会继续",4)
+    end)
 end
 
 function Plugin:_sync_fail(text)

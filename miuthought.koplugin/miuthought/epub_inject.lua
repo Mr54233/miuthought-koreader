@@ -246,6 +246,7 @@ function M.inject_copy(src, book_id, chapters, opts)
             if not writer:addFileFromMemory(entry.path, content, mtime) then
                 return fail("写入副本失败:" .. entry.path)
             end
+            if opts.progress then pcall(opts.progress, entry.path) end
             content = nil
             collectgarbage("step", 200)
         end
