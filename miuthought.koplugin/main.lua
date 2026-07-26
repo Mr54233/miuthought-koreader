@@ -97,6 +97,9 @@ function Plugin:home_menu()
     items[#items+1]={text="选择书籍绑定微信读书",callback=self:safe("fm_bind",function()
         self:pick_book("选择要绑定的 EPUB(长按文件名选中)",function(path) self:bind_book(path) end)
     end)}
+    items[#items+1]={text="选择书籍更多操作(重注 / 续拉 / 还原)",callback=self:safe("fm_actions",function()
+        self:pick_book("选择 EPUB(长按文件名选中)",function(path) self:book_actions(path) end)
+    end)}
     items[#items+1]={text="账户",sub_item_table_func=function() return self:account_menu() end}
     items[#items+1]={text="设置",sub_item_table_func=function() return self:settings_menu() end}
     items[#items+1]={text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end}
@@ -158,6 +161,37 @@ function Plugin:pick_book(title,on_pick)
         end,
     }
     UIManager:show(chooser)
+end
+
+-- 文件管理器选书后的操作面板:与阅读器菜单同一套能力与判定,
+-- 不打开书也能续拉/离线重注/还原。
+function Plugin:book_actions(path)
+    local ButtonDialog=require("ui/widget/buttondialog")
+    local bound=Binding.get(self.store,path)
+    local dialog
+    local function act(fn) return function() UIManager:close(dialog); fn() end end
+    local rows={}
+    rows[#rows+1]={{text="同步划线与想法",callback=act(function() self:sync_entry(path) end)}}
+    if bound then
+        local state=self:_sync_state(bound.book_id)
+        if state and (tonumber(state.pending) or 0)>0 then
+            rows[#rows+1]={{text=string.format("继续拉取后续章节(还剩 %d 章)",state.pending),
+                callback=act(function() self:sync_entry(path,"sync") end)}}
+        end
+    end
+    if self:_has_reinject_cache(path) then
+        rows[#rows+1]={{text="重新注入(用上次数据,离线)",callback=act(function() self:sync_entry(path,"reinject") end)}}
+    end
+    if U.file_exists(path..".orig") then
+        rows[#rows+1]={{text="还原原书(移除划线注入)",callback=act(function() self:restore_original(path) end)}}
+    end
+    rows[#rows+1]={{text=bound and "重新绑定微信读书" or "绑定微信读书",
+        callback=act(function() self:bind_book(path) end)}}
+    rows[#rows+1]={{text="取消",callback=function() UIManager:close(dialog) end}}
+    local title=self:doc_title_guess(path)
+    if bound then title=title.."\n已绑定:"..tostring(bound.title or bound.book_id) end
+    dialog=ButtonDialog:new{title=title,buttons=rows}
+    UIManager:show(dialog)
 end
 
 -- ===== 绑定微信读书 =====
@@ -684,18 +718,25 @@ function Plugin:_sync_report(report)
     })
 end
 
-function Plugin:restore_original()
-    local path=self:current_doc_path()
+function Plugin:restore_original(path)
+    path=path or self:current_doc_path()
     if not path then self:info("请先打开一本本地书") return end
+    if self.sync_task and self.sync_task:busy() then
+        self:info("同步任务进行中,请等它完成(或取消)后再还原")
+        return
+    end
     local backup=path..".orig"
     if not U.file_exists(backup) then self:info("没有找到原书备份("..backup..")") return end
+    -- 书正开着时替换文件,阅读器缓存会失效,需要用户重开;文管里还原则无感。
+    local is_open=path==self:current_doc_path()
     UIManager:show(ConfirmBox:new{
-        text="将用原书备份覆盖当前划线版,书内注入的划线与想法会移除(想法缓存保留)。\n还原后请重新打开本书。",
+        text="将用原书备份覆盖当前划线版,书内注入的划线与想法会移除(想法缓存保留)。"
+            ..(is_open and "\n还原后请重新打开本书。" or ""),
         ok_text="还原原书",
         ok_callback=function()
             os.remove(path)
             local ok,err=os.rename(backup,path)
-            if ok then self:toast("已还原原书,请重新打开本书",3)
+            if ok then self:toast(is_open and "已还原原书,请重新打开本书" or "已还原原书",3)
             else self:info("还原失败:\n"..tostring(err or "重命名失败")) end
         end,
         cancel_text="取消",
