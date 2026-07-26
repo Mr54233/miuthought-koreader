@@ -21,7 +21,10 @@ end
 _G.T = T
 _G.STUBS = require("tests.stubs")
 
-local files = {"tests.test_smoke", "tests.test_epub_reader", "tests.test_epub_inject"}
+local files = {
+    "tests.test_smoke", "tests.test_epub_reader", "tests.test_epub_inject",
+    "tests.test_binding", "tests.test_chapter_map", "tests.test_sync",
+}
 for _, name in ipairs(files) do
     local ok, err = pcall(require, name)
     if not ok and not tostring(err):find("module '" .. name .. "' not found", 1, true) then

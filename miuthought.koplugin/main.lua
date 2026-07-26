@@ -18,6 +18,7 @@ local Updater=require("miuthought.updater")
 local Cookies=require("miuthought.cookies")
 local Thoughts=require("miuthought.thoughts")
 local ThoughtPopup=require("miuthought.thought_popup")
+local Binding=require("miuthought.binding")
 local _=Text.tr
 local unpack_args=unpack or table.unpack
 local source=debug.getinfo(1,"S").source:gsub("^@",""); local ROOT=source:match("^(.*)/main%.lua$") or "."
@@ -72,12 +73,78 @@ end
 
 function Plugin:reader_menu()
     return {
-        {text="绑定微信读书",callback=self:safe("bind",function() self:toast("绑定功能开发中") end)},
+        {text="绑定微信读书",callback=self:safe("bind",function() self:bind_book() end)},
         {text="同步划线与想法",callback=self:safe("sync_thoughts",function() self:toast("同步功能开发中") end)},
         {text="账户",sub_item_table_func=function() return self:account_menu() end},
         {text="设置",sub_item_table_func=function() return self:settings_menu() end},
         {text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end},
     }
+end
+
+-- ===== 绑定微信读书 =====
+function Plugin:current_doc_path()
+    local doc=self.ui and self.ui.document
+    return doc and doc.file or nil
+end
+
+function Plugin:doc_title_guess()
+    local props=(self.ui and self.ui.doc_props) or {}
+    local title=U.trim(tostring(props.display_title or props.title or ""))
+    if title~="" then return title end
+    local name=tostring(self:current_doc_path() or ""):match("([^/\\]+)$") or ""
+    return (name:gsub("%.[eE][pP][uU][bB]$",""))
+end
+
+function Plugin:bind_book()
+    local path=self:current_doc_path()
+    if not path then self:info("请先打开一本本地书") return end
+    local current=Binding.get(self.store,path)
+    if not current then self:bind_search(path) return end
+    local ButtonDialog=require("ui/widget/buttondialog")
+    local display=tostring(current.title or current.book_id or "")
+    if tostring(current.author or "")~="" then display=display.." · "..tostring(current.author) end
+    local dialog
+    dialog=ButtonDialog:new{
+        title="当前绑定:\n"..display,
+        buttons={
+            {{text="重新绑定",callback=function() UIManager:close(dialog); self:bind_search(path) end}},
+            {{text="解除绑定",callback=function() UIManager:close(dialog); Binding.clear(self.store,path); self:toast("已解除绑定") end}},
+            {{text="取消",callback=function() UIManager:close(dialog) end}},
+        },
+    }
+    UIManager:show(dialog)
+end
+
+function Plugin:bind_search(path)
+    if not self:require_login() then return end
+    local d
+    d=InputDialog:new{title="搜索微信读书",input=self:doc_title_guess(),buttons={{
+        {text="取消",id="close",callback=function() UIManager:close(d) end},
+        {text="搜索",is_enter_default=true,callback=function()
+            local q=U.trim(d:getInputText()); UIManager:close(d)
+            if q=="" then self:info("请输入书名") return end
+            self:online("bind_search",function()
+                local ok,data=pcall(function() return self.api:search(q) end)
+                if not ok then self:info("搜索失败:\n"..U.first_line(data)) return end
+                local rows=Binding.normalize_search(data)
+                if #rows==0 then self:info("没有搜到「"..q.."」,换个关键词试试") return end
+                local menu
+                local items={}
+                for _,row in ipairs(rows) do
+                    local label=row.title~="" and row.title or row.book_id
+                    if row.author~="" then label=label.." · "..row.author end
+                    items[#items+1]={text=label,callback=function()
+                        if menu then UIManager:close(menu) end
+                        Binding.save(self.store,path,{book_id=row.book_id,title=row.title,author=row.author})
+                        self:toast("已绑定:"..(row.title~="" and row.title or row.book_id))
+                    end}
+                end
+                menu=Menu:new{title="选择要绑定的书",item_table=items,is_borderless=true,title_bar_fm_style=true}
+                UIManager:show(menu)
+            end)
+        end},
+    }}}
+    UIManager:show(d); d:onShowKeyboard()
 end
 
 function Plugin:account_menu()
