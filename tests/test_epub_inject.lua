@@ -160,7 +160,7 @@ T.case("重叠划线只计实际锚点数", function()
     T.eq(stats.marks, 1, "重叠划线去重后 marks 记实际注入数")
 end)
 
-T.case("后缀歧义与同目标冲突都进 unmatched", function()
+T.case("后缀歧义进 unmatched,同一文件多章叠加注入", function()
     local opf = [[<package><manifest>
 <item id="p1" href="part1/ch1.xhtml" media-type="application/xhtml+xml"/>
 <item id="p2" href="part2/ch1.xhtml" media-type="application/xhtml+xml"/>
@@ -175,17 +175,24 @@ T.case("后缀歧义与同目标冲突都进 unmatched", function()
     local chapters = {
         {chapter_uid = "amb", href = "ch1.xhtml", underlines = CHAPTERS[1].underlines,
          review_map = {}},
-        {chapter_uid = "42", href = "part1/ch1.xhtml", underlines = CHAPTERS[1].underlines,
-         review_map = {}},
-        {chapter_uid = "dup", href = "part1/ch1.xhtml", underlines = CHAPTERS[1].underlines,
-         review_map = {}},
+        {chapter_uid = "42", href = "part1/ch1.xhtml",
+         underlines = {{range = "0-7", markText = "春江潮水连海平"}}, review_map = {}},
+        {chapter_uid = "43", href = "part1/ch1.xhtml",
+         underlines = {{range = "8-15", markText = "海上明月共潮生"}}, review_map = {}},
     }
-    local stats, err = run_inject(files, chapters)
+    local stats, err, Arc = run_inject(files, chapters)
     T.ok(stats, "应成功: " .. tostring(err))
-    T.eq(stats.injected, 1, "只注入无歧义的一章")
-    T.eq(#stats.unmatched, 2, "歧义 + 同目标冲突都计入 unmatched")
+    T.eq(stats.injected, 2, "同一文件两章都注入")
+    T.eq(#stats.unmatched, 1, "只有歧义章节未匹配")
     T.eq(stats.unmatched[1], "amb", "歧义章节")
-    T.eq(stats.unmatched[2], "dup", "冲突章节")
+    local ch1
+    for _, e in ipairs(STUBS.written(Arc._last_writer)) do
+        if e.path == "OEBPS/part1/ch1.xhtml" then ch1 = e end
+    end
+    T.ok(ch1.content:find('data-miu-range="0-7"', 1, true), "第一章锚点在")
+    T.ok(ch1.content:find('data-miu-range="8-15"', 1, true), "第二章锚点叠加在同一文件")
+    local _, style_count = ch1.content:gsub('id="miuread%-annotation%-style"', "")
+    T.eq(style_count, 1, "样式只内联一次")
 end)
 
 T.case("没有划线数据时明确报错", function()

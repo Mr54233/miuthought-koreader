@@ -94,15 +94,19 @@ local function range_of(row)
     return (kind == "string" or kind == "number") and tostring(value) or ""
 end
 
--- 实际落进正文的锚点数:按划线 range 逐个在渲染结果里找 data-miu-range。
--- (annotations 的 dropped 不含去重叠环节丢弃的划线,直接数结果才准。)
-local function count_marks(rendered, underlines)
+-- 实际落进正文的锚点数:按划线 range 逐个对比注入前后的 data-miu-range。
+-- (annotations 的 dropped 不含去重叠环节丢弃的划线,直接数结果才准;
+-- 同一文件叠加多章时,与 base 对比才不会把前面章节的锚点算进来。)
+local function count_marks(rendered, underlines, base)
     local n, seen = 0, {}
     for _, row in ipairs(underlines or {}) do
         local key = range_of(row)
         if key ~= "" and not seen[key] then
             seen[key] = true
-            if rendered:find('data-miu-range="' .. key .. '"', 1, true) then n = n + 1 end
+            local needle = 'data-miu-range="' .. key .. '"'
+            if rendered:find(needle, 1, true) and not (base and base:find(needle, 1, true)) then
+                n = n + 1
+            end
         end
     end
     return n
@@ -146,15 +150,20 @@ function M.inject_copy(src, book_id, chapters, opts)
     for _, ch in ipairs(chapters or {}) do
         total_underlines = total_underlines + #(ch.underlines or {})
         local entry_path = match_entry(meta, ch.href)
-        if not entry_path or targets[entry_path] then
-            -- 未匹配、歧义、或与前面章节撞到同一文件,都不能安静吞掉。
+        if not entry_path then
+            -- 未匹配或后缀歧义,不能安静吞掉。
             stats.unmatched[#stats.unmatched + 1] = tostring(ch.chapter_uid or ch.href or "?")
         else
-            local html, read_err = EpubReader.read(meta, entry_path, opts.archiver)
-            if not html then return nil, read_err end
+            -- 多个微信章节可以落在同一 spine 文件:在前面章节的注入结果上叠加。
+            local base = targets[entry_path]
+            if not base then
+                local html, read_err = EpubReader.read(meta, entry_path, opts.archiver)
+                if not html then return nil, read_err end
+                base = html
+            end
             local data = chapter_data(book_id, ch)
-            local rendered, _, ch_stats = Annotations:new(nil):apply(html, data)
-            local mark_count = count_marks(rendered, data.underlines)
+            local rendered, _, ch_stats = Annotations:new(nil):apply(base, data)
+            local mark_count = count_marks(rendered, data.underlines, base)
             if mark_count > 0 then
                 targets[entry_path] = ensure_style(rendered)
                 stats.injected = stats.injected + 1
