@@ -48,7 +48,12 @@ local function make_deps(overrides)
         inject = function(src, book_id, mapped, dest)
             calls.injected = {src = src, book_id = book_id, mapped = mapped, dest = dest}
             return {injected = #mapped, marks = #mapped,
-                unmatched = {}, quote_aligned = #mapped, dropped = 0}
+                unmatched = {}, quote_aligned = #mapped, dropped = 0,
+                merges = {{uid = "1", from = "2-5", into = "0-7"}}}
+        end,
+        merge_thoughts = function(book_id, uid, from, into)
+            calls.merged = {book_id = book_id, uid = tostring(uid), from = from, into = into}
+            return true
         end,
         progress = function(phase, i, n, text)
             calls.progress[#calls.progress + 1] = {phase = phase, i = i, n = n, text = text}
@@ -81,6 +86,8 @@ T.case("同步全流程", function()
     T.eq(report.total_thought_entries, 1, "拉取想法总数")
     T.eq(report.chapters_matched, 1, "匹配章数")
     T.eq(report.unmatched_underlines, 0, "未匹配无连带损失")
+    T.eq(calls.merged.from, "2-5", "重叠想法合并被分发")
+    T.eq(calls.merged.into, "0-7", "并入存活锚点")
     T.eq(#calls.saved, 1, "save_thoughts 调用一次")
     T.eq(calls.saved[1].uid, "1", "缓存第一章")
     T.eq(#calls.injected.mapped, 1, "注入一章")

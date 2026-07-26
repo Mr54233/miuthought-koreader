@@ -15,6 +15,23 @@ T.case("stub 环境能加载现有纯 Lua 模块", function()
     T.ok(rendered:find("miu-thought-link", 1, true), "注入引擎离线可用,应产出想法锚点")
 end)
 
+T.case("Thoughts.merge_rows 合并重叠划线的想法组", function()
+    local Thoughts = require("miuthought.thoughts")
+    local rows = {
+        {range = "0-7", texts = {{content = "甲说", author = "甲", review_id = "r1"}}},
+        {range = "2-5", texts = {{content = "乙说", author = "乙", review_id = "r2"},
+                                 {content = "甲说", author = "甲", review_id = "r1"}}},
+    }
+    T.ok(Thoughts.merge_rows(rows, "2-5", "0-7"), "合并发生")
+    T.eq(#rows[1].texts, 2, "去重后并入 1 条(r1 已存在不重复)")
+    T.eq(rows[1].texts[2].review_id, "r2", "乙的想法进入存活组")
+    T.ok(not Thoughts.merge_rows(rows, "2-5", "0-7"), "再次合并无新增")
+
+    local lone = {{range = "9-12", texts = {{content = "孤想法", review_id = "r9"}}}}
+    T.ok(Thoughts.merge_rows(lone, "9-12", "0-7"), "目标组缺失时重新锚定")
+    T.eq(lone[1].range, "0-7", "组改挂到存活锚点的 range")
+end)
+
 T.case("atomic_write 可覆盖已存在文件", function()
     local U = require("miuthought.util")
     local p = "tests/.tmp_atomic_test"

@@ -252,6 +252,30 @@ T.case("叠加章节同 range 键按出现次数差计数", function()
     T.eq(stats.marks, 2, "出现次数差计数不被键碰撞清零")
 end)
 
+T.case("重叠划线带想法时并入存活锚点", function()
+    local chapters = {{
+        chapter_uid = "42", href = "Text/ch1.xhtml",
+        underlines = {
+            {range = "0-7", markText = "春江潮水连海平"},
+            {range = "2-5", markText = "潮水连海"},
+        },
+        review_map = {["2-5"] = {{content = "被合并划线上的想法", author = "乙"}}},
+    }}
+    local stats, err, Arc = run_inject(book_files(), chapters)
+    T.ok(stats, "应成功: " .. tostring(err))
+    T.eq(stats.marks, 1, "只留一个锚点")
+    T.eq(#stats.merges, 1, "记录合并映射")
+    T.eq(stats.merges[1].from, "2-5", "from=被合并划线")
+    T.eq(stats.merges[1].into, "0-7", "into=存活锚点")
+    T.eq(stats.merges[1].uid, "42", "带章节 uid")
+    local ch1
+    for _, e in ipairs(STUBS.written(Arc._last_writer)) do
+        if e.path == "OEBPS/Text/ch1.xhtml" then ch1 = e end
+    end
+    T.ok(ch1.content:find("miu-thought-mark", 1, true), "存活锚点升级为想法虚线")
+    T.ok(ch1.content:find('href="#miuxiang-', 1, true), "存活锚点带想法链接")
+end)
+
 T.case("rename 目标已存在时重试", function()
     local calls = 0
     local stats, err = run_inject(book_files(), CHAPTERS, nil, {

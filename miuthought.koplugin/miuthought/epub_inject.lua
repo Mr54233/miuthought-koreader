@@ -155,6 +155,7 @@ function M.inject_copy(src, book_id, chapters, opts)
     local targets, stats = {}, {
         injected = 0, marks = 0, unmatched = {},
         quote_aligned = 0, numeric = 0, dropped = 0, overlapped = 0, unlocated = 0,
+        merges = {},
     }
     local marker_chapters = {}
     local total_underlines = 0
@@ -184,6 +185,11 @@ function M.inject_copy(src, book_id, chapters, opts)
             stats.dropped = stats.dropped + (ch_stats.dropped or 0)
             stats.overlapped = stats.overlapped + (ch_stats.overlapped or 0)
             stats.unlocated = stats.unlocated + (ch_stats.unlocated or 0)
+            for _, merge in ipairs(ch_stats.merged or {}) do
+                stats.merges[#stats.merges + 1] = {
+                    uid = data.chapter_uid, from = merge.from, into = merge.into,
+                }
+            end
             if mark_count > 0 then
                 targets[entry_path] = ensure_style(rendered)
                 stats.injected = stats.injected + 1

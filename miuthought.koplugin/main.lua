@@ -491,6 +491,7 @@ function Plugin:_sync_run(path,bound)
             load_meta=function(p) return EpubReader.load(p) end,
             read_text=function(m,href) return (EpubReader.read(m,href)) end,
             save_thoughts=function(book_id,uid,groups) return Thoughts.save(self.store,book_id,uid,groups) end,
+            merge_thoughts=function(book_id,uid,from,into) return Thoughts.merge(self.store,book_id,uid,from,into) end,
             inject=function(src,book_id,mapped,dest)
                 return EpubInject.inject_copy(src,book_id,mapped,{dest=dest})
             end,
@@ -525,8 +526,9 @@ function Plugin:_sync_report(report)
         "",
         string.format("想法 %d 条 · 划线 %d 条",
             report.total_thought_entries or 0,report.total_underlines or 0),
-        string.format("注入成功:%d 处(%d 章)",report.marks or 0,report.injected or 0),
-        string.format("未注入:%d 条(重复划线或对不上正文)",report.dropped or 0),
+        string.format("注入成功:%d 处锚点,%d 章(重复划线已合并 %d 条,想法不丢)",
+            report.marks or 0,report.injected or 0,report.overlapped or 0),
+        string.format("未注入:%d 条(本地正文对不上)",report.unlocated or 0),
     }
     if #(report.unmatched or {})>0 then
         lines[#lines+1]=string.format("有 %d 章没对上本地书(损失 %d 条)",

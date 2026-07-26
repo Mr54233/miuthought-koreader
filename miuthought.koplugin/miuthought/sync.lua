@@ -149,6 +149,13 @@ function Sync.run(deps)
     local stats, inject_err = deps.inject(src, deps.book_id, mapped, temp_dest)
     if not stats then return nil, inject_err end
 
+    -- 重叠划线被合并的,把想法并进存活锚点的组:点一个虚线看到这一段全部想法。
+    if deps.merge_thoughts then
+        for _, merge in ipairs(stats.merges or {}) do
+            pcall(deps.merge_thoughts, deps.book_id, merge.uid, merge.from, merge.into)
+        end
+    end
+
     if src == doc_path then
         -- 首次:原书让位为备份,注入版顶上原路径(进度侧车不动)。
         local ok_backup, backup_err = rename(doc_path, backup)

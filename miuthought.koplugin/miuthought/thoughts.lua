@@ -198,6 +198,56 @@ function Thoughts.save(store, book_id, chapter_uid, groups)
     return #rows, path
 end
 
+-- 把 from_range 组的想法并进 into_range 组(注入时重叠划线被合并,
+-- 存活锚点要能弹出被合并划线的想法)。纯函数,便于测试。
+-- into 组不存在时直接把 from 组重新锚定为 into(内容原地改名)。
+function Thoughts.merge_rows(rows, from_range, into_range)
+    from_range, into_range = tostring(from_range or ""), tostring(into_range or "")
+    if from_range == "" or into_range == "" or from_range == into_range then return false end
+    local from_group, into_group
+    for _, row in ipairs(rows or {}) do
+        if type(row) == "table" then
+            if tostring(row.range) == from_range then from_group = row end
+            if tostring(row.range) == into_range then into_group = row end
+        end
+    end
+    if not from_group or type(from_group.texts) ~= "table" then return false end
+    if not into_group then
+        from_group.range = into_range
+        return true
+    end
+    into_group.texts = type(into_group.texts) == "table" and into_group.texts or {}
+    local seen = {}
+    for _, item in ipairs(into_group.texts) do
+        local key = tostring(item.review_id or "")
+        if key == "" then key = tostring(item.author or "") .. "\0" .. tostring(item.content or "") end
+        seen[key] = true
+    end
+    local appended = false
+    for _, item in ipairs(from_group.texts) do
+        local key = tostring(item.review_id or "")
+        if key == "" then key = tostring(item.author or "") .. "\0" .. tostring(item.content or "") end
+        if not seen[key] then
+            seen[key] = true
+            into_group.texts[#into_group.texts + 1] = item
+            appended = true
+        end
+    end
+    return appended
+end
+
+function Thoughts.merge(store, book_id, chapter_uid, from_range, into_range)
+    local path = Thoughts.cache_path(store, book_id, chapter_uid)
+    local raw = U.read_file(path, true)
+    if not raw then return false end
+    local ok, rows = pcall(Json.decode, raw)
+    if not ok or type(rows) ~= "table" then return false end
+    if not Thoughts.merge_rows(rows, from_range, into_range) then return false end
+    local wrote = U.atomic_write(path, Json.encode(rows), true)
+    if wrote then invalidate_path(path) end
+    return wrote == true
+end
+
 function Thoughts.load(store, book_id, chapter_uid)
     local path = Thoughts.cache_path(store, book_id, chapter_uid)
     local signature = file_signature(path)

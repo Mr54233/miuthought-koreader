@@ -522,6 +522,7 @@ function SyncTask:start(task, on_progress, on_done)
                 load_meta = function(p) return EpubReader.load(p) end,
                 read_text = function(m, href) return (EpubReader.read(m, href)) end,
                 save_thoughts = function(bid, uid, groups) return Thoughts.save(store, bid, uid, groups) end,
+                merge_thoughts = function(bid, uid, from, into) return Thoughts.merge(store, bid, uid, from, into) end,
                 inject = function(src, bid, mapped, dest)
                     return EpubInject.inject_copy(src, bid, mapped, {dest = dest, progress = function(name)
                         heartbeat("inject", tostring(name or ""), 0.90)
