@@ -396,7 +396,7 @@ function Plugin:_start_sync_task(path,bound,mode,opts)
     opts=opts or {}
     local title=U.trim(tostring(bound.title or ""))
     if title=="" then title=self:doc_title_guess(path) end
-    local runtime={doc_path=path,book_id=bound.book_id,title=title,started_at=os.time(),dialog=nil,background=false}
+    local runtime={doc_path=path,book_id=bound.book_id,title=title,mode=mode,started_at=os.time(),dialog=nil,background=false}
     local ok,err=self.sync_task:start({doc_path=path,book_id=bound.book_id,title=title,mode=mode},
         function(state) self:_on_sync_progress(runtime,state) end,
         function(result) self:_finish_sync(runtime,result) end)
@@ -420,6 +420,18 @@ end
 function Plugin:_on_sync_progress(runtime,state)
     if self._sync_runtime~=runtime then return end
     runtime.last_state=U.copy(state or {})
+    -- 大书提醒(每次任务只提一次):章节总数超过单批上限时说明分批策略。
+    if not runtime.big_book_notified and runtime.mode~="reinject"
+        and state and state.stage=="fetch" then
+        local total=tonumber(state.total) or 0
+        local limit=tonumber(self.store:preferences().sync_batch_limit) or 300
+        if total>limit then
+            runtime.big_book_notified=true
+            self:toast(string.format(
+                "本书共 %d 章。为防风控,单次最多拉 %d 章;"
+                .."其余用「继续拉取后续章节」按钮,或阅读时自动补。",total,limit),6)
+        end
+    end
     if runtime.dialog then runtime.dialog:set_state(state) end
 end
 
