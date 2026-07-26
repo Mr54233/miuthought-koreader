@@ -402,7 +402,7 @@ function SyncTask:start(task, on_progress, on_done)
         local Store = require("miuthought.store")
         local Http = require("miuthought.http")
         local Api = require("miuthought.api")
-        local Annotations = require("miuthought.annotations")
+        local WebFetch = require("miuthought.web_fetch")
         local Sync = require("miuthought.sync")
         local EpubReader = require("miuthought.epub_reader")
         local EpubInject = require("miuthought.epub_inject")
@@ -430,7 +430,7 @@ function SyncTask:start(task, on_progress, on_done)
             }
             local http = Http:new(store)
             local api = Api:new(http, store, nil)
-            local annotations = Annotations:new(api)
+            local fetcher = WebFetch:new(api)
 
             -- 心跳:章节内的想法批次、注入条目都发进度,让父进程看门狗能区分
             -- 「慢但活着」与「真死了」。2 秒节流,避免高频写盘。
@@ -471,7 +471,7 @@ function SyncTask:start(task, on_progress, on_done)
                             return data
                         end
                     end
-                    local data = annotations:fetch_chapter(bid, uid, function(stage2, i2, n2, extra)
+                    local data = fetcher:fetch_chapter(bid, uid, function(stage2, i2, n2, extra)
                         if stage2 == "thoughts" then
                             heartbeat("fetch", "想法批次 " .. tostring(i2) .. "/" .. tostring(n2)
                                 .. (extra and extra ~= "" and (" " .. tostring(extra)) or ""), fetch_percent())

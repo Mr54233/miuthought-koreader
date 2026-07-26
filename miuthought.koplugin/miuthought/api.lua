@@ -84,8 +84,40 @@ local function unique_candidates(value)
     return out
 end
 
+local WEB = "https://weread.qq.com"
+
 function Api:new(http, store, reader)
     return setmetatable({http = http, store = store, reader = reader}, self)
+end
+
+-- 网关的 Bearer key 短时效且已对大部分端点 403;数据面全部走 web 端
+-- (Cookie 鉴权)。登录态失效时用 wr_rt 续期一次(原 reader:renew 同款请求,
+-- set-cookie 由 http 层自动写回 jar),再重试原请求。
+function Api:renew_session()
+    if self._renewing then return false, "登录状态正在续期" end
+    self._renewing = true
+    local ok, err = pcall(function()
+        local data = self.http:post_json(WEB .. "/web/login/renewal", {rq="%2Fweb%2Fbook%2Fread", ql=false},
+            {headers={Origin=WEB, Referer=WEB .. "/", Accept="application/json, text/plain, */*"}, retries=2})
+        if type(data) ~= "table" then error("续期接口返回无效数据") end
+    end)
+    self._renewing = false
+    if ok then
+        logger.info("[MiuThought][Api] web session renewed")
+        return true
+    end
+    return false, tostring(err)
+end
+
+function Api:_web_call(fn)
+    local ok, result = pcall(fn)
+    if ok then return result end
+    if not Http.is_auth_error(result) then error(result) end
+    local renewed, renew_err = self:renew_session()
+    if not renewed then
+        error(tostring(result) .. ";自动续期失败(" .. tostring(renew_err or "") .. "),请重新扫码登录")
+    end
+    return fn()
 end
 
 function Api:call(name, params, request_options)
@@ -123,8 +155,44 @@ function Api:shelf(options)
         timeout=options.timeout or {10,18},
     })
 end
+function Api:web_search(q, offset, count)
+    local url = WEB .. "/web/search/global?keyword=" .. Protocol.escape(tostring(q or ""))
+        .. "&maxIdx=" .. tostring(offset or 0) .. "&count=" .. tostring(count or 32) .. "&fragmentSize=120"
+    return self:_web_call(function()
+        return self.http:get_json(url, {retries=1, timeout={10, 18}, headers={Referer=WEB .. "/"}})
+    end)
+end
+
 function Api:search(q, offset, count)
-    return self:call("/store/search", {keyword=tostring(q or ""), scope=10, maxIdx=offset or 0, count=count or 30}, {retries=1, timeout={10, 18}})
+    local ok, data = pcall(function() return self:web_search(q, offset, count) end)
+    if ok then return data end
+    local fallback_ok, fallback = pcall(function()
+        return self:call("/store/search", {keyword=tostring(q or ""), scope=10, maxIdx=offset or 0, count=count or 30}, {retries=1, timeout={10, 18}})
+    end)
+    if fallback_ok then return fallback end
+    error(data)
+end
+
+-- 热门划线:chapterUid 参数不起过滤作用,整本一次拉回,调用方按章分组。
+function Api:web_bestbookmarks(id)
+    id = tostring(id or "")
+    if id == "" then error("invalid book id") end
+    return self:_web_call(function()
+        return self.http:get_json(WEB .. "/web/book/bestbookmarks?bookId=" .. Protocol.escape(id)
+            .. "&count=2000&synckey=0", {retries=2, headers={Referer=Protocol.reader_url(id)}})
+    end)
+end
+
+-- 章节想法(公开热门,含 range/content/abstract/作者)。
+function Api:web_chapter_reviews(id, uid)
+    id = tostring(id or "")
+    if id == "" then error("invalid book id") end
+    return self:_web_call(function()
+        return self.http:get_json(WEB .. "/web/review/list?bookId=" .. Protocol.escape(id)
+            .. "&chapterUid=" .. Protocol.escape(uid)
+            .. "&listType=8&maxIdx=0&count=100&listMode=3&synckey=0",
+            {retries=2, headers={Referer=Protocol.reader_url(id)}})
+    end)
 end
 function Api:book(id) return self:call("/book/info", {bookId=tostring(id)}) end
 
@@ -134,13 +202,15 @@ function Api:book(id) return self:call("/book/info", {bookId=tostring(id)}) end
 function Api:web_chapters(id)
     id = tostring(id or "")
     if id == "" then error("invalid book id") end
-    return self.http:post_json("https://weread.qq.com/web/book/chapterInfos", {bookIds={id}}, {
-        retries = 3,
-        headers = {
-            Origin = "https://weread.qq.com",
-            Referer = Protocol.reader_url(id),
-        },
-    })
+    return self:_web_call(function()
+        return self.http:post_json(WEB .. "/web/book/chapterInfos", {bookIds={id}}, {
+            retries = 3,
+            headers = {
+                Origin = WEB,
+                Referer = Protocol.reader_url(id),
+            },
+        })
+    end)
 end
 
 function Api:chapters(id)

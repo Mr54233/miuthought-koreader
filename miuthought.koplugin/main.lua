@@ -474,6 +474,7 @@ function Plugin:_sync_run(path,bound)
     local Sync=require("miuthought.sync")
     local EpubReader=require("miuthought.epub_reader")
     local EpubInject=require("miuthought.epub_inject")
+    local WebFetch=require("miuthought.web_fetch")
     -- 整包扫描前先把提示画上屏;meta 只加载一次,副本判定与 Sync 复用同一份。
     if not Trapper:info("正在读取本地书…") then return end
     local meta,meta_err=EpubReader.load(path)
@@ -488,7 +489,7 @@ function Plugin:_sync_run(path,bound)
             doc_path=path,
             book_id=bound.book_id,
             api=self.api,
-            annotations=self.annotations,
+            annotations=WebFetch:new(self.api),
             load_meta=function() return meta end,
             read_text=function(m,href) return (EpubReader.read(m,href)) end,
             save_thoughts=function(book_id,uid,groups) return Thoughts.save(self.store,book_id,uid,groups) end,
