@@ -152,6 +152,10 @@ function SyncTask:_hold_awake()
     local ok, err = pcall(function() UIManager:preventStandby() end)
     if ok then
         self.standby_held = true
+        -- T1 重置只管 Kindle 框架的息屏;KOReader 自带的 AutoSuspend 插件是
+        -- 另一条独立休眠路径,用 PluginShare.pause_auto_suspend 一并按住
+        -- (Kobo 等无 T1 的设备靠的就是这条)。
+        pcall(function() require("pluginshare").pause_auto_suspend = true end)
         local reset = self:_reset_device_timeout()
         logger.info("[MiuThought][SyncTask] standby lock acquired", "t1_reset=", tostring(reset))
     else
@@ -163,6 +167,7 @@ function SyncTask:_release_awake()
     if not self.standby_held then return end
     self.standby_held = false
     pcall(function() UIManager:allowStandby() end)
+    pcall(function() require("pluginshare").pause_auto_suspend = false end)
     logger.info("[MiuThought][SyncTask] standby lock released")
 end
 
