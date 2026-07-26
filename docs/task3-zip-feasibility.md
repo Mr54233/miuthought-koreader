@@ -74,7 +74,10 @@ repair task 的子进程 + 轮询骨架。
 
 ## 待确认
 
-- [ ] 用户设备上的 KOReader 版本 ≥ v2025.08(唯一前提)
+- [x] 用户设备上的 KOReader 版本 ≥ v2025.08(唯一前提)——已确认没问题
+
+> 2026-07-26:已按本结论实现 `epub_reader.lua` + `epub_inject.lua`(计划见
+> docs/superpowers/plans/2026-07-26-task3-epub-inject.md,桌面测试 `luajit tests/run.lua`)。
 
 > `.recovered/` 目录是从 `git show 9273cf5:...` 导出的被删源码,仅供参考,不入库;
 > 需要时可随时重新导出。
