@@ -498,13 +498,14 @@ function SyncTask:start(task, on_progress, on_done)
             }
 
             emit{stage = "prepare", current = 0, total = 1, chapter = doc_title}
-            -- 清扫上次被硬杀留下的副本 .tmp 残留(书目录里用户看得见)与缓存孤儿 tmp。
-            local dest_base = EpubInject.copy_path(doc_path)
-            local book_dir_path = dest_base:match("^(.*)/[^/]+$")
+            -- 清扫上次被硬杀留下的中间文件(书目录里用户看得见)与缓存孤儿 tmp。
+            -- 注意绝不能碰 .orig 原书备份。
+            local book_dir_path = doc_path:match("^(.*)/[^/]+$")
             if book_dir_path then
                 for _, file in ipairs(UChild.list(book_dir_path)) do
-                    if file ~= dest_base and file:find(dest_base, 1, true) == 1
-                        and file:find(".tmp", #dest_base + 1, true) then
+                    if file ~= doc_path and file:find(doc_path, 1, true) == 1
+                        and (file:find(".miuthought-new", #doc_path + 1, true)
+                            or file:find(".觅想.epub.tmp", #doc_path + 1, true)) then
                         os.remove(file)
                     end
                 end
@@ -512,20 +513,17 @@ function SyncTask:start(task, on_progress, on_done)
             for _, file in ipairs(UChild.list(cache_dir)) do
                 if file:match("%.tmp%-%d+%-%d+$") then os.remove(file) end
             end
-            local meta, meta_err = EpubReader.load(doc_path)
-            if not meta then error(meta_err or "无法读取本地书") end
-            if meta.has[EpubInject.MARKER] then error("当前选择的是觅想版副本,请选择原书") end
 
             local report, sync_err = Sync.run{
                 doc_path = doc_path,
                 book_id = book_id,
                 api = api,
                 annotations = cached_annotations,
-                load_meta = function() return meta end,
+                load_meta = function(p) return EpubReader.load(p) end,
                 read_text = function(m, href) return (EpubReader.read(m, href)) end,
                 save_thoughts = function(bid, uid, groups) return Thoughts.save(store, bid, uid, groups) end,
-                inject = function(src, bid, mapped)
-                    return EpubInject.inject_copy(src, bid, mapped, {progress = function(name)
+                inject = function(src, bid, mapped, dest)
+                    return EpubInject.inject_copy(src, bid, mapped, {dest = dest, progress = function(name)
                         heartbeat("inject", tostring(name or ""), 0.90)
                     end})
                 end,

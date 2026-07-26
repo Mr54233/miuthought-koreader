@@ -1,29 +1,52 @@
--- 同步编排:拉取微信读书划线与想法 → 想法缓存 → 章节映射 → 注入副本。
+-- 同步编排:拉取微信读书划线与想法 → 想法缓存 → 章节映射 → 注入并替换原书。
+-- 替换语义:首次同步把原书备份为 <path>.orig,注入版顶替原路径——KOReader 的
+-- 阅读进度/侧车跟着路径走,进度得以保留;再次同步从 .orig 干净原书重新注入。
 -- 全部外部能力经 deps 注入,便于桌面测试;UI(进度/取消)由调用方通过 progress 提供。
 --
 -- deps:
---   doc_path        本地 EPUB 路径(原书)
+--   doc_path        本地 EPUB 路径(书架上正在用的路径)
 --   book_id         微信读书 bookId
 --   api             :chapters(book_id)
---   annotations     :fetch_chapter(book_id, uid) → 见 annotations.lua(网络重试在内部)
+--   annotations     :fetch_chapter(book_id, uid) → 与 annotations.lua 同形
 --   load_meta(path) → meta, err(epub_reader.load 的形状)
 --   read_text(meta, href) → html|nil
 --   save_thoughts(book_id, uid, review_groups)
---   inject(src, book_id, mapped_chapters) → stats, err(epub_inject.inject_copy 的形状)
+--   inject(src, book_id, mapped_chapters, dest) → stats, err(epub_inject.inject_copy)
 --   progress(phase, i, n, text) → 返回 false 表示取消(可选)
+--   file_exists/rename/remove(可选,默认真实文件系统)
 local Binding = require("miuthought.binding")
 local ChapterMap = require("miuthought.chapter_map")
+local EpubInject = require("miuthought.epub_inject")
+local U = require("miuthought.util")
 
 local Sync = {}
+
+Sync.BACKUP_SUFFIX = ".orig"
+
+function Sync.backup_path(doc_path) return tostring(doc_path) .. Sync.BACKUP_SUFFIX end
 
 function Sync.run(deps)
     local progress = deps.progress or function() return true end
     local function step(phase, i, n, text)
         return progress(phase, i, n, text) ~= false
     end
+    local file_exists = deps.file_exists or U.file_exists
+    local rename = deps.rename or os.rename
+    local remove = deps.remove or os.remove
 
-    local meta, meta_err = deps.load_meta(deps.doc_path)
+    -- 源解析:书架路径若已是注入版(有 .orig 备份),从干净备份重新注入。
+    local doc_path = tostring(deps.doc_path)
+    local backup = Sync.backup_path(doc_path)
+    local src = file_exists(backup) and backup or doc_path
+
+    local meta, meta_err = deps.load_meta(src)
     if not meta then return nil, meta_err end
+    if meta.has and meta.has[EpubInject.MARKER] then
+        if src == doc_path then
+            return nil, "这本书已被注入过,但找不到原书备份(" .. backup .. "),无法重新同步"
+        end
+        return nil, "原书备份本身是注入版,数据异常;请手动恢复原书后重试"
+    end
 
     if not step("chapters", 0, 1, "获取章节列表") then return nil, "已取消" end
     local ok, chapters_raw = pcall(function() return deps.api:chapters(deps.book_id) end)
@@ -111,12 +134,35 @@ function Sync.run(deps)
         return nil, "没有任何章节能匹配到本地书,请确认绑定的和本地打开的是同一本书"
     end
 
-    if not step("inject", 0, 1, "生成觅想版副本") then return nil, "已取消" end
-    local stats, inject_err = deps.inject(deps.doc_path, deps.book_id, mapped)
+    if not step("inject", 0, 1, "生成划线版") then return nil, "已取消" end
+    -- 注入到中间文件(无 .epub 后缀,不会闪现在书架),成功后原子换位。
+    local temp_dest = doc_path .. ".miuthought-new"
+    local stats, inject_err = deps.inject(src, deps.book_id, mapped, temp_dest)
     if not stats then return nil, inject_err end
 
+    if src == doc_path then
+        -- 首次:原书让位为备份,注入版顶上原路径(进度侧车不动)。
+        local ok_backup, backup_err = rename(doc_path, backup)
+        if not ok_backup then
+            remove(temp_dest)
+            return nil, "无法备份原书:" .. tostring(backup_err or "重命名失败")
+        end
+    end
+    local ok_swap, swap_err = rename(temp_dest, doc_path)
+    if not ok_swap then
+        remove(doc_path)
+        ok_swap, swap_err = rename(temp_dest, doc_path)
+    end
+    if not ok_swap then
+        remove(temp_dest)
+        -- 回滚:无论首次还是重同步,书架路径上必须留有可读的书。
+        if not file_exists(doc_path) then rename(backup, doc_path) end
+        return nil, "无法替换原书:" .. tostring(swap_err or "重命名失败")
+    end
+
     return {
-        dest = stats.dest,
+        dest = doc_path,
+        backup = backup,
         injected = stats.injected,
         marks = stats.marks,
         quote_aligned = stats.quote_aligned,

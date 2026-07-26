@@ -4,10 +4,14 @@ local CH1_TEXT = "<html><body><p>春江潮水连海平,海上明月共潮生。<
 local CH2_TEXT = "<html><body><p>滟滟随波千万里,何处春江无月明。</p></body></html>"
 
 local function make_deps(overrides)
-    local calls = {saved = {}, injected = nil, progress = {}}
+    local calls = {saved = {}, injected = nil, progress = {}, renames = {}, removed = {}}
     local deps = {
+        _calls = calls,
         doc_path = "/books/书.epub",
         book_id = "b001",
+        file_exists = function() return false end,
+        rename = function(a, b) calls.renames[#calls.renames + 1] = {a, b}; return true end,
+        remove = function(p) calls.removed[#calls.removed + 1] = p; return true end,
         api = {
             chapters = function()
                 return {data = {
@@ -30,8 +34,9 @@ local function make_deps(overrides)
                     underline_count = 0, thought_count = 0, thought_entry_count = 0, errors = {}}
             end,
         },
-        load_meta = function()
-            return {spine = {{href = "OEBPS/c1.xhtml"}, {href = "OEBPS/c2.xhtml"}}}
+        load_meta = function(p)
+            calls.meta_path = p
+            return {spine = {{href = "OEBPS/c1.xhtml"}, {href = "OEBPS/c2.xhtml"}}, has = {}}
         end,
         read_text = function(_, href)
             return href == "OEBPS/c1.xhtml" and CH1_TEXT or CH2_TEXT
@@ -40,9 +45,9 @@ local function make_deps(overrides)
             calls.saved[#calls.saved + 1] = {book_id = book_id, uid = tostring(uid), groups = groups}
             return #groups
         end,
-        inject = function(src, book_id, mapped)
-            calls.injected = {src = src, book_id = book_id, mapped = mapped}
-            return {dest = "/books/书.觅想.epub", injected = #mapped, marks = #mapped,
+        inject = function(src, book_id, mapped, dest)
+            calls.injected = {src = src, book_id = book_id, mapped = mapped, dest = dest}
+            return {injected = #mapped, marks = #mapped,
                 unmatched = {}, quote_aligned = #mapped, dropped = 0}
         end,
         progress = function(phase, i, n, text)
@@ -62,7 +67,15 @@ T.case("同步全流程", function()
     T.eq(report.chapters_with_data, 1, "有划线章节数")
     T.eq(report.injected, 1, "注入章节数")
     T.eq(report.thoughts_saved, 1, "想法缓存章节数")
-    T.eq(report.dest, "/books/书.觅想.epub", "dest 透传")
+    T.eq(report.dest, "/books/书.epub", "替换后 dest 就是原书路径")
+    T.eq(report.backup, "/books/书.epub.orig", "备份路径")
+    T.eq(calls.injected.src, "/books/书.epub", "首次从原书注入")
+    T.eq(calls.injected.dest, "/books/书.epub.miuthought-new", "注入到中间文件")
+    T.eq(#calls.renames, 2, "两次换位")
+    T.eq(calls.renames[1][1], "/books/书.epub", "原书让位")
+    T.eq(calls.renames[1][2], "/books/书.epub.orig", "成为备份")
+    T.eq(calls.renames[2][1], "/books/书.epub.miuthought-new", "注入版")
+    T.eq(calls.renames[2][2], "/books/书.epub", "顶上原路径")
     T.eq(report.fetch_errors, 0, "无拉取错误")
     T.eq(#calls.saved, 1, "save_thoughts 调用一次")
     T.eq(calls.saved[1].uid, "1", "缓存第一章")
@@ -70,6 +83,30 @@ T.case("同步全流程", function()
     T.eq(calls.injected.mapped[1].href, "OEBPS/c1.xhtml", "映射到 c1")
     T.eq(calls.injected.mapped[1].chapter_uid, "1", "chapter_uid 传递")
     T.ok(#calls.progress >= 3, "进度回调发生")
+end)
+
+T.case("重同步从 .orig 干净备份注入", function()
+    local deps, calls = make_deps({
+        file_exists = function(p) return p == "/books/书.epub.orig" end,
+    })
+    local report, err = Sync.run(deps)
+    T.ok(report, "应成功: " .. tostring(err))
+    T.eq(calls.meta_path, "/books/书.epub.orig", "meta 读的是备份")
+    T.eq(calls.injected.src, "/books/书.epub.orig", "从备份注入")
+    T.eq(#calls.renames, 1, "只有注入版顶位一次")
+    T.eq(calls.renames[1][2], "/books/书.epub", "顶上原路径")
+    T.eq(report.dest, "/books/书.epub", "dest 仍是书架路径")
+end)
+
+T.case("已注入但无备份时拒绝并说明", function()
+    local EpubInject = require("miuthought.epub_inject")
+    local deps = make_deps({
+        load_meta = function()
+            return {spine = {{href = "x"}}, has = {[EpubInject.MARKER] = true}}
+        end,
+    })
+    local report, err = Sync.run(deps)
+    T.ok(report == nil and tostring(err):find("找不到原书备份", 1, true), "报错: " .. tostring(err))
 end)
 
 T.case("进度回调返回 false 即取消", function()

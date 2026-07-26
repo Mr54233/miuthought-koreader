@@ -108,6 +108,10 @@ function Plugin:reader_menu()
     items[#items+1]=self:_sync_status_item()
     items[#items+1]={text="绑定微信读书",callback=self:safe("bind",function() self:bind_book() end)}
     items[#items+1]={text="同步划线与想法",callback=self:safe("sync_thoughts",function() self:sync_thoughts() end)}
+    local doc_path=self:current_doc_path()
+    if doc_path and U.file_exists(doc_path..".orig") then
+        items[#items+1]={text="还原原书(移除划线注入)",callback=self:safe("restore",function() self:restore_original() end)}
+    end
     items[#items+1]={text="账户",sub_item_table_func=function() return self:account_menu() end}
     items[#items+1]={text="设置",sub_item_table_func=function() return self:settings_menu() end}
     items[#items+1]={text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end}
@@ -475,13 +479,7 @@ function Plugin:_sync_run(path,bound)
     local EpubReader=require("miuthought.epub_reader")
     local EpubInject=require("miuthought.epub_inject")
     local WebFetch=require("miuthought.web_fetch")
-    -- 整包扫描前先把提示画上屏;meta 只加载一次,副本判定与 Sync 复用同一份。
     if not Trapper:info("正在读取本地书…") then return end
-    local meta,meta_err=EpubReader.load(path)
-    if not meta then Trapper:clear(); self:_sync_fail("同步失败:\n"..U.first_line(meta_err,220)); return end
-    if meta.has[EpubInject.MARKER] then
-        Trapper:clear(); self:_sync_fail("当前打开的是觅想版副本,请打开原书执行同步"); return
-    end
     -- Sync.run 内部对 api/fetch 已 pcall,但 ChapterMap/EpubReader 的意外异常
     -- 会死在协程里(Trapper 只记日志),必须在这里收敛成用户可见的失败。
     local ok,report,err=xpcall(function()
@@ -490,16 +488,18 @@ function Plugin:_sync_run(path,bound)
             book_id=bound.book_id,
             api=self.api,
             annotations=WebFetch:new(self.api),
-            load_meta=function() return meta end,
+            load_meta=function(p) return EpubReader.load(p) end,
             read_text=function(m,href) return (EpubReader.read(m,href)) end,
             save_thoughts=function(book_id,uid,groups) return Thoughts.save(self.store,book_id,uid,groups) end,
-            inject=function(src,book_id,mapped) return EpubInject.inject_copy(src,book_id,mapped) end,
+            inject=function(src,book_id,mapped,dest)
+                return EpubInject.inject_copy(src,book_id,mapped,{dest=dest})
+            end,
             progress=function(phase,i,n,text)
                 local msg
                 if phase=="chapters" then msg="正在获取章节列表…"
                 elseif phase=="fetch" then msg=string.format("正在拉取划线与想法 %d/%d\n%s\n(点按屏幕可取消)",i,n,tostring(text or ""))
                 elseif phase=="map" then msg="正在匹配本地章节…"
-                else msg="正在生成觅想版副本…\n(书较大时需要一点时间)" end
+                else msg="正在生成划线版并替换…\n(书较大时需要一点时间)" end
                 return Trapper:info(msg)
             end,
         }
@@ -542,16 +542,35 @@ function Plugin:_sync_report(report)
         lines[#lines+1]=string.format("有 %d 章想法缓存写入失败(检查存储空间),对应弹窗将不可用",report.save_failures)
     end
     lines[#lines+1]=""
-    lines[#lines+1]="副本:"..tostring(report.dest)
+    lines[#lines+1]="已替换原书(阅读进度保留)"
+    lines[#lines+1]="原版备份:"..tostring(report.backup or "")
     UIManager:show(ConfirmBox:new{
         text=table.concat(lines,"\n"),
         flush_events_on_show=true,
-        ok_text="打开副本",
+        ok_text="打开划线版",
         ok_callback=function()
             local ReaderUI=require("apps/reader/readerui")
             ReaderUI:showReader(report.dest)
         end,
         cancel_text="稍后",
+    })
+end
+
+function Plugin:restore_original()
+    local path=self:current_doc_path()
+    if not path then self:info("请先打开一本本地书") return end
+    local backup=path..".orig"
+    if not U.file_exists(backup) then self:info("没有找到原书备份("..backup..")") return end
+    UIManager:show(ConfirmBox:new{
+        text="将用原书备份覆盖当前划线版,书内注入的划线与想法会移除(想法缓存保留)。\n还原后请重新打开本书。",
+        ok_text="还原原书",
+        ok_callback=function()
+            os.remove(path)
+            local ok,err=os.rename(backup,path)
+            if ok then self:toast("已还原原书,请重新打开本书",3)
+            else self:info("还原失败:\n"..tostring(err or "重命名失败")) end
+        end,
+        cancel_text="取消",
     })
 end
 
