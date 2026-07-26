@@ -74,7 +74,7 @@ end
 function Plugin:reader_menu()
     return {
         {text="绑定微信读书",callback=self:safe("bind",function() self:bind_book() end)},
-        {text="同步划线与想法",callback=self:safe("sync_thoughts",function() self:toast("同步功能开发中") end)},
+        {text="同步划线与想法",callback=self:safe("sync_thoughts",function() self:sync_thoughts() end)},
         {text="账户",sub_item_table_func=function() return self:account_menu() end},
         {text="设置",sub_item_table_func=function() return self:settings_menu() end},
         {text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end},
@@ -217,6 +217,89 @@ end
 function Plugin:onShowMiuThought()
     local items=self.ui.document and self:reader_menu() or self:home_menu()
     self:list(Config.NAME,items)
+end
+
+-- ===== 同步划线与想法 =====
+function Plugin:sync_thoughts()
+    local path=self:current_doc_path()
+    if not path then self:info("请先打开一本本地书") return end
+    if not tostring(path):lower():match("%.epub$") then self:info("只支持 EPUB 格式的本地书") return end
+    if not self:require_login() then return end
+    local EpubReader=require("miuthought.epub_reader")
+    local available,gate_err=EpubReader.available()
+    if not available then self:info(tostring(gate_err)) return end
+    local EpubInject=require("miuthought.epub_inject")
+    if EpubInject.is_copy(path) then self:info("当前打开的是觅想版副本,请打开原书执行同步") return end
+    local bound=Binding.get(self.store,path)
+    if not bound then self:info("尚未绑定微信读书书目,请先在菜单里完成「绑定微信读书」") return end
+    if not self:is_online() then self:info(_("Network unavailable")) return end
+    local Trapper=require("ui/trapper")
+    Trapper:wrap(function() self:_sync_run(path,bound) end)
+end
+
+function Plugin:_sync_run(path,bound)
+    local Trapper=require("ui/trapper")
+    local Sync=require("miuthought.sync")
+    local EpubReader=require("miuthought.epub_reader")
+    local EpubInject=require("miuthought.epub_inject")
+    local report,err=Sync.run{
+        doc_path=path,
+        book_id=bound.book_id,
+        api=self.api,
+        annotations=self.annotations,
+        load_meta=function(p) return EpubReader.load(p) end,
+        read_text=function(meta,href) return (EpubReader.read(meta,href)) end,
+        save_thoughts=function(book_id,uid,groups) Thoughts.save(self.store,book_id,uid,groups) end,
+        inject=function(src,book_id,mapped) return EpubInject.inject_copy(src,book_id,mapped) end,
+        progress=function(phase,i,n,text)
+            local msg
+            if phase=="chapters" then msg="正在获取章节列表…"
+            elseif phase=="fetch" then msg=string.format("正在拉取划线与想法 %d/%d\n%s",i,n,tostring(text or ""))
+            elseif phase=="map" then msg="正在匹配本地章节…"
+            else msg="正在生成觅想版副本…\n(书较大时需要一点时间)" end
+            return Trapper:info(msg)
+        end,
+    }
+    Trapper:clear()
+    if not report then
+        if tostring(err)~="已取消" then self:info("同步失败:\n"..U.first_line(err,220)) end
+        return
+    end
+    self:_sync_report(report)
+end
+
+function Plugin:_sync_report(report)
+    local lines={
+        "同步完成",
+        "",
+        string.format("章节:%d/%d 有划线,注入 %d 章",
+            report.chapters_with_data,report.chapters_total,report.injected),
+        string.format("锚点:%d 处(引文对齐 %d,定位失败 %d)",
+            report.marks or 0,report.quote_aligned or 0,report.dropped or 0),
+        string.format("想法缓存:%d 章",report.thoughts_saved or 0),
+    }
+    local misses={}
+    for _,row in ipairs(report.unmatched or {}) do
+        misses[#misses+1]=tostring(row.title~="" and row.title or row.uid)
+    end
+    if #misses>0 then
+        local shown=table.concat(misses,"、",1,math.min(#misses,5))
+        lines[#lines+1]="未匹配章节:"..shown..(#misses>5 and("等 "..#misses.." 章") or "")
+    end
+    if (report.fetch_errors or 0)>0 then
+        lines[#lines+1]=string.format("有 %d 章拉取失败,可稍后重新同步",report.fetch_errors)
+    end
+    lines[#lines+1]=""
+    lines[#lines+1]="副本:"..tostring(report.dest)
+    UIManager:show(ConfirmBox:new{
+        text=table.concat(lines,"\n"),
+        ok_text="打开副本",
+        ok_callback=function()
+            local ReaderUI=require("apps/reader/readerui")
+            ReaderUI:showReader(report.dest)
+        end,
+        cancel_text="稍后",
+    })
 end
 
 -- ===== 想法弹窗体系（点击 EPUB 锚点 → 弹窗）=====
