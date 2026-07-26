@@ -33,14 +33,15 @@ function Sync.run(deps)
 
     local fetched = {}
     local total_underlines = 0
-    local fetch_errors, thoughts_saved = 0, 0
+    -- 硬失败=整章划线都没拉到(决定是否中止);部分失败=划线在手、想法批次有缺(只计报告)。
+    local hard_failures, partial_errors, thoughts_saved = 0, 0, 0
     for i, ch in ipairs(chapter_list) do
         if not step("fetch", i, #chapter_list, ch.title) then return nil, "已取消" end
         local good, data = pcall(function()
             return deps.annotations:fetch_chapter(deps.book_id, ch.uid)
         end)
-        if good and type(data) == "table" then
-            if #(data.errors or {}) > 0 then fetch_errors = fetch_errors + 1 end
+        if good and type(data) == "table" and data.underline_request_ok ~= false then
+            if #(data.errors or {}) > 0 then partial_errors = partial_errors + 1 end
             total_underlines = total_underlines + (data.underline_count or 0)
             if (data.underline_count or 0) > 0 then
                 fetched[#fetched + 1] = {
@@ -53,11 +54,11 @@ function Sync.run(deps)
                 if saved then thoughts_saved = thoughts_saved + 1 end
             end
         else
-            fetch_errors = fetch_errors + 1
+            hard_failures = hard_failures + 1
         end
     end
-    if fetch_errors >= #chapter_list then
-        return nil, "划线拉取失败(共 " .. tostring(fetch_errors) .. " 章),请检查网络后重试"
+    if hard_failures >= #chapter_list then
+        return nil, "划线拉取失败(共 " .. tostring(hard_failures) .. " 章),请检查网络后重试"
     end
     if total_underlines == 0 then return nil, "这本书在微信读书里没有划线" end
 
@@ -84,7 +85,7 @@ function Sync.run(deps)
         chapters_total = #chapter_list,
         chapters_with_data = #fetched,
         unmatched = unmatched,
-        fetch_errors = fetch_errors,
+        fetch_errors = hard_failures + partial_errors,
     }
 end
 
