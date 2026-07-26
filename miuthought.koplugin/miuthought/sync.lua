@@ -56,6 +56,7 @@ function Sync.run(deps)
 
     local fetched = {}
     local total_underlines = 0
+    local total_thought_entries = 0
     -- 硬失败=整章划线都没拉到(决定是否中止);部分失败=划线在手、想法批次有缺(只计报告)。
     local hard_failures, partial_errors = 0, 0
     local thoughts_saved, save_failures = 0, 0
@@ -78,6 +79,7 @@ function Sync.run(deps)
             if not data.resumed then consecutive_hard = 0 end
             if #(data.errors or {}) > 0 then partial_errors = partial_errors + 1 end
             total_underlines = total_underlines + (data.underline_count or 0)
+            total_thought_entries = total_thought_entries + (data.thought_entry_count or 0)
             if (data.underline_count or 0) > 0 then
                 fetched[#fetched + 1] = {
                     uid = ch.uid, title = ch.title,
@@ -133,6 +135,13 @@ function Sync.run(deps)
     if #mapped == 0 then
         return nil, "没有任何章节能匹配到本地书,请确认绑定的和本地打开的是同一本书"
     end
+    -- 未匹配章节连带损失的划线数(报告要能说清"失败带走了多少")。
+    local underlines_by_uid = {}
+    for _, ch in ipairs(fetched) do underlines_by_uid[tostring(ch.uid)] = #(ch.underlines or {}) end
+    local unmatched_underlines = 0
+    for _, row in ipairs(unmatched) do
+        unmatched_underlines = unmatched_underlines + (underlines_by_uid[tostring(row.uid)] or 0)
+    end
 
     if not step("inject", 0, 1, "生成划线版") then return nil, "已取消" end
     -- 注入到中间文件(无 .epub 后缀,不会闪现在书架),成功后原子换位。
@@ -175,7 +184,11 @@ function Sync.run(deps)
         save_failures = save_failures,
         chapters_total = #chapter_list,
         chapters_with_data = #fetched,
+        chapters_matched = #mapped,
+        total_underlines = total_underlines,
+        total_thought_entries = total_thought_entries,
         unmatched = unmatched,
+        unmatched_underlines = unmatched_underlines,
         fetch_errors = hard_failures + partial_errors,
     }
 end
