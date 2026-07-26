@@ -15,6 +15,15 @@ T.case("stub 环境能加载现有纯 Lua 模块", function()
     T.ok(rendered:find("miu-thought-link", 1, true), "注入引擎离线可用,应产出想法锚点")
 end)
 
+T.case("atomic_write 可覆盖已存在文件", function()
+    local U = require("miuthought.util")
+    local p = "tests/.tmp_atomic_test"
+    T.ok(U.atomic_write(p, "v1", true), "首写")
+    T.ok(U.atomic_write(p, "v2", true), "覆盖写(Windows rename 需删目标重试)")
+    T.eq(U.read_file(p, true), "v2", "内容为新值")
+    os.remove(p)
+end)
+
 T.case("archiver mock 与真实 API 同语义", function()
     local Arc = STUBS.archiver_mock({{path = "mimetype", content = "application/epub+zip"}})
     local r = Arc.Reader:new()

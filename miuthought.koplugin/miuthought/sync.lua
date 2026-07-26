@@ -34,13 +34,16 @@ function Sync.run(deps)
     local fetched = {}
     local total_underlines = 0
     -- 硬失败=整章划线都没拉到(决定是否中止);部分失败=划线在手、想法批次有缺(只计报告)。
-    local hard_failures, partial_errors, thoughts_saved = 0, 0, 0
+    local hard_failures, partial_errors = 0, 0
+    local thoughts_saved, save_failures = 0, 0
+    local consecutive_hard = 0
     for i, ch in ipairs(chapter_list) do
         if not step("fetch", i, #chapter_list, ch.title) then return nil, "已取消" end
         local good, data = pcall(function()
             return deps.annotations:fetch_chapter(deps.book_id, ch.uid)
         end)
         if good and type(data) == "table" and data.underline_request_ok ~= false then
+            consecutive_hard = 0
             if #(data.errors or {}) > 0 then partial_errors = partial_errors + 1 end
             total_underlines = total_underlines + (data.underline_count or 0)
             if (data.underline_count or 0) > 0 then
@@ -50,17 +53,32 @@ function Sync.run(deps)
                 }
             end
             if #(data.review_groups or {}) > 0 then
-                local saved = pcall(deps.save_thoughts, deps.book_id, ch.uid, data.review_groups)
-                if saved then thoughts_saved = thoughts_saved + 1 end
+                local ok_save, saved = pcall(deps.save_thoughts, deps.book_id, ch.uid, data.review_groups)
+                if ok_save and saved then
+                    thoughts_saved = thoughts_saved + 1
+                else
+                    save_failures = save_failures + 1
+                end
             end
         else
             hard_failures = hard_failures + 1
+            consecutive_hard = consecutive_hard + 1
+            -- 断网熔断:连续多章整章失败(每章重试要吃满超时)不能逐章磨完全书。
+            -- 最后一章失败时不熔断,让已取到的数据走完正常出口。
+            if consecutive_hard >= 3 and i < #chapter_list then
+                return nil, string.format("网络连续 %d 章拉取失败,已中止同步;请检查网络后重试", consecutive_hard)
+            end
         end
     end
     if hard_failures >= #chapter_list then
         return nil, "划线拉取失败(共 " .. tostring(hard_failures) .. " 章),请检查网络后重试"
     end
-    if total_underlines == 0 then return nil, "这本书在微信读书里没有划线" end
+    if total_underlines == 0 then
+        if hard_failures > 0 then
+            return nil, string.format("有 %d 章拉取失败,已成功的章节没有划线,请检查网络后重试", hard_failures)
+        end
+        return nil, "这本书在微信读书里没有划线"
+    end
 
     if not step("map", 0, 1, "匹配本地章节") then return nil, "已取消" end
     local mapped, unmatched = ChapterMap.build(meta.spine, function(href)
@@ -82,6 +100,7 @@ function Sync.run(deps)
         dropped = stats.dropped,
         inject_unmatched = stats.unmatched,
         thoughts_saved = thoughts_saved,
+        save_failures = save_failures,
         chapters_total = #chapter_list,
         chapters_with_data = #fetched,
         unmatched = unmatched,

@@ -27,7 +27,11 @@ function U.atomic_write(p,d,b)
     local parent=p:match("^(.*)/[^/]+$"); if parent then U.mkdir(parent) end
     local t=p..".tmp-"..tostring(os.time()).."-"..tostring(math.random(1000,9999)); local f,e=io.open(t,b and "wb" or "w"); if not f then return nil,e end
     local ok,er=f:write(d or ""); f:flush(); f:close(); if not ok then os.remove(t); return nil,er end
-    os.remove(p); local r,re=os.rename(t,p); if not r then os.remove(t); return nil,re end; return true
+    -- 先试原子改名(POSIX 直接覆盖);仅在失败时(Windows 目标已存在)删除旧文件重试,
+    -- 避免无条件先删——改名失败时至少不弄丢已有文件。
+    local r,re=os.rename(t,p)
+    if not r then os.remove(p); r,re=os.rename(t,p) end
+    if not r then os.remove(t); return nil,re end; return true
 end
 function U.remove_tree(p)
     p=tostring(p or "")

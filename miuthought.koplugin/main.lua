@@ -60,7 +60,22 @@ function Plugin:toast(t,s) UIManager:show(InfoMessage:new{text=tostring(t or "")
 function Plugin:safe(label,fn) return function(...) local a={...}; local ok,e=xpcall(function() return fn(unpack_args(a)) end,debug.traceback); if not ok then logger.err("[MiuThought]",label,e); self:info(_("Operation failed")..":\n"..U.first_line(e)) end end end
 function Plugin:is_online() local ok,N=pcall(require,"ui/network/manager"); if not ok or not N or not N.isOnline then return true end; local g,v=pcall(N.isOnline,N); return not g or v==true end
 function Plugin:online(label,fn) if not self:is_online() then self:info(_("Network unavailable")); return end; UIManager:scheduleIn(.05,self:safe(label,fn)) end
-function Plugin:list(title,items,empty) if not items or #items==0 then self:info(empty or _("No items")); return end; UIManager:show(Menu:new{title=title,item_table=items,is_borderless=true,title_bar_fm_style=true}) end
+function Plugin:list(title,items,empty)
+    if not items or #items==0 then self:info(empty or _("No items")); return end
+    -- 普通 Menu 选中后不会自动关闭:包一层 callback,选中先关菜单再执行。
+    local menu
+    local wrapped={}
+    for i,item in ipairs(items) do
+        local copy={}; for k,v in pairs(item) do copy[k]=v end
+        if type(copy.callback)=="function" then
+            local original=copy.callback
+            copy.callback=function(...) if menu then UIManager:close(menu) end; return original(...) end
+        end
+        wrapped[i]=copy
+    end
+    menu=Menu:new{title=title,item_table=wrapped,is_borderless=true,title_bar_fm_style=true}
+    UIManager:show(menu)
+end
 function Plugin:logged_in() local a=self.store:auth(); return a.api_key~="" and next(a.cookies or {})~=nil end
 function Plugin:require_login() if not self:logged_in() then self:info(_("Not logged in")); return false end return true end
 
@@ -234,8 +249,6 @@ function Plugin:sync_thoughts()
     local EpubReader=require("miuthought.epub_reader")
     local available,gate_err=EpubReader.available()
     if not available then self:info(tostring(gate_err)) return end
-    local EpubInject=require("miuthought.epub_inject")
-    if EpubInject.is_copy(path) then self:info("当前打开的是觅想版副本,请打开原书执行同步") return end
     local bound=Binding.get(self.store,path)
     if not bound then self:info("尚未绑定微信读书书目,请先在菜单里完成「绑定微信读书」") return end
     if not self:is_online() then self:info(_("Network unavailable")) return end
@@ -243,32 +256,53 @@ function Plugin:sync_thoughts()
     Trapper:wrap(function() self:_sync_run(path,bound) end)
 end
 
+function Plugin:_sync_fail(text)
+    -- flush_events_on_show:注入阶段长时间阻塞里排队的点击不能秒关结果窗。
+    UIManager:show(InfoMessage:new{text=tostring(text or ""),flush_events_on_show=true})
+end
+
 function Plugin:_sync_run(path,bound)
     local Trapper=require("ui/trapper")
     local Sync=require("miuthought.sync")
     local EpubReader=require("miuthought.epub_reader")
     local EpubInject=require("miuthought.epub_inject")
-    local report,err=Sync.run{
-        doc_path=path,
-        book_id=bound.book_id,
-        api=self.api,
-        annotations=self.annotations,
-        load_meta=function(p) return EpubReader.load(p) end,
-        read_text=function(meta,href) return (EpubReader.read(meta,href)) end,
-        save_thoughts=function(book_id,uid,groups) Thoughts.save(self.store,book_id,uid,groups) end,
-        inject=function(src,book_id,mapped) return EpubInject.inject_copy(src,book_id,mapped) end,
-        progress=function(phase,i,n,text)
-            local msg
-            if phase=="chapters" then msg="正在获取章节列表…"
-            elseif phase=="fetch" then msg=string.format("正在拉取划线与想法 %d/%d\n%s",i,n,tostring(text or ""))
-            elseif phase=="map" then msg="正在匹配本地章节…"
-            else msg="正在生成觅想版副本…\n(书较大时需要一点时间)" end
-            return Trapper:info(msg)
-        end,
-    }
+    -- 整包扫描前先把提示画上屏;meta 只加载一次,副本判定与 Sync 复用同一份。
+    if not Trapper:info("正在读取本地书…") then return end
+    local meta,meta_err=EpubReader.load(path)
+    if not meta then Trapper:clear(); self:_sync_fail("同步失败:\n"..U.first_line(meta_err,220)); return end
+    if meta.has[EpubInject.MARKER] then
+        Trapper:clear(); self:_sync_fail("当前打开的是觅想版副本,请打开原书执行同步"); return
+    end
+    -- Sync.run 内部对 api/fetch 已 pcall,但 ChapterMap/EpubReader 的意外异常
+    -- 会死在协程里(Trapper 只记日志),必须在这里收敛成用户可见的失败。
+    local ok,report,err=xpcall(function()
+        return Sync.run{
+            doc_path=path,
+            book_id=bound.book_id,
+            api=self.api,
+            annotations=self.annotations,
+            load_meta=function() return meta end,
+            read_text=function(m,href) return (EpubReader.read(m,href)) end,
+            save_thoughts=function(book_id,uid,groups) return Thoughts.save(self.store,book_id,uid,groups) end,
+            inject=function(src,book_id,mapped) return EpubInject.inject_copy(src,book_id,mapped) end,
+            progress=function(phase,i,n,text)
+                local msg
+                if phase=="chapters" then msg="正在获取章节列表…"
+                elseif phase=="fetch" then msg=string.format("正在拉取划线与想法 %d/%d\n%s",i,n,tostring(text or ""))
+                elseif phase=="map" then msg="正在匹配本地章节…"
+                else msg="正在生成觅想版副本…\n(书较大时需要一点时间)" end
+                return Trapper:info(msg)
+            end,
+        }
+    end,debug.traceback)
     Trapper:clear()
+    if not ok then
+        logger.err("[MiuThought][Sync] unexpected error",tostring(report))
+        self:_sync_fail("同步失败:\n"..U.first_line(report,220))
+        return
+    end
     if not report then
-        if tostring(err)~="已取消" then self:info("同步失败:\n"..U.first_line(err,220)) end
+        if tostring(err)~="已取消" then self:_sync_fail("同步失败:\n"..U.first_line(err,220)) end
         return
     end
     self:_sync_report(report)
@@ -295,10 +329,14 @@ function Plugin:_sync_report(report)
     if (report.fetch_errors or 0)>0 then
         lines[#lines+1]=string.format("有 %d 章拉取失败,可稍后重新同步",report.fetch_errors)
     end
+    if (report.save_failures or 0)>0 then
+        lines[#lines+1]=string.format("有 %d 章想法缓存写入失败(检查存储空间),对应弹窗将不可用",report.save_failures)
+    end
     lines[#lines+1]=""
     lines[#lines+1]="副本:"..tostring(report.dest)
     UIManager:show(ConfirmBox:new{
         text=table.concat(lines,"\n"),
+        flush_events_on_show=true,
         ok_text="打开副本",
         ok_callback=function()
             local ReaderUI=require("apps/reader/readerui")

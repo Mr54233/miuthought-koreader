@@ -514,7 +514,12 @@ local function intervals(data, visible_count, index)
     table.sort(out, function(x,y) if x.a==y.a then return x.b<y.b end return x.a<y.a end)
     local clean, cursor = {}, -1
     for _, it in ipairs(out) do
-        if it.a >= cursor then clean[#clean + 1] = it; cursor = it.b end
+        if it.a >= cursor then
+            clean[#clean + 1] = it; cursor = it.b
+        else
+            -- 与前一条划线交叠而被丢弃:计入 dropped,让同步报告如实反映。
+            stats.dropped = stats.dropped + 1
+        end
     end
     return clean, stats
 end

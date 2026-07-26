@@ -185,7 +185,12 @@ function Thoughts.save(store, book_id, chapter_uid, groups)
         os.remove(path)
         return 0, path
     end
-    U.atomic_write(path, Json.encode(rows), true)
+    local wrote, write_err = U.atomic_write(path, Json.encode(rows), true)
+    if not wrote then
+        logger.warn("[MiuRead][Thoughts] cache write failed", "book=", tostring(book_id),
+            "chapter=", tostring(chapter_uid), "error=", tostring(write_err))
+        return nil, "想法缓存写入失败:" .. tostring(write_err or "")
+    end
     logger.info("[MiuRead][Thoughts] cache saved", "book=", tostring(book_id),
         "chapter=", tostring(chapter_uid), "groups=", tostring(#rows))
     return #rows, path

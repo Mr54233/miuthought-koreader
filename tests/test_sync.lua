@@ -38,6 +38,7 @@ local function make_deps(overrides)
         end,
         save_thoughts = function(book_id, uid, groups)
             calls.saved[#calls.saved + 1] = {book_id = book_id, uid = tostring(uid), groups = groups}
+            return #groups
         end,
         inject = function(src, book_id, mapped)
             calls.injected = {src = src, book_id = book_id, mapped = mapped}
@@ -117,6 +118,53 @@ T.case("引文全不匹配本地书", function()
     })
     local report, err = Sync.run(deps)
     T.ok(report == nil and tostring(err):find("匹配", 1, true), "映射失败报错: " .. tostring(err))
+end)
+
+T.case("连续硬失败触发断网熔断", function()
+    local rows = {}
+    for i = 1, 10 do rows[i] = {chapterUid = i, title = "第" .. i .. "章", chapterIdx = i} end
+    local fetch_count = 0
+    local deps, calls = make_deps({
+        api = {chapters = function() return {data = rows} end},
+        annotations = {
+            fetch_chapter = function() fetch_count = fetch_count + 1; error("network request failed") end,
+        },
+    })
+    local report, err = Sync.run(deps)
+    T.ok(report == nil and tostring(err):find("连续", 1, true), "熔断报错: " .. tostring(err))
+    T.eq(fetch_count, 3, "连续 3 章失败即中止,不磨完全书")
+    T.eq(calls.injected, nil, "熔断后不注入")
+end)
+
+T.case("末尾连续失败且成功章节无划线时报拉取失败而非无划线", function()
+    local rows = {}
+    for i = 1, 4 do rows[i] = {chapterUid = i, title = "第" .. i .. "章", chapterIdx = i} end
+    local deps = make_deps({
+        api = {chapters = function() return {data = rows} end},
+        annotations = {
+            fetch_chapter = function(_, _, uid)
+                if tostring(uid) == "1" then
+                    return {underlines = {}, review_map = {}, review_groups = {},
+                        underline_count = 0, thought_count = 0, thought_entry_count = 0, errors = {}}
+                end
+                error("network request failed")
+            end,
+        },
+    })
+    local report, err = Sync.run(deps)
+    T.ok(report == nil, "应失败")
+    T.ok(tostring(err):find("拉取失败", 1, true), "归因网络: " .. tostring(err))
+    T.ok(not tostring(err):find("这本书在微信读书里没有划线", 1, true), "不得误报为书无划线")
+end)
+
+T.case("想法缓存写失败计入 save_failures 不计入 thoughts_saved", function()
+    local deps, _ = make_deps({
+        save_thoughts = function() return nil, "磁盘满" end,
+    })
+    local report, err = Sync.run(deps)
+    T.ok(report, "应成功: " .. tostring(err))
+    T.eq(report.thoughts_saved, 0, "写失败不算保存成功")
+    T.eq(report.save_failures, 1, "写失败计数")
 end)
 
 T.case("单章拉取失败不中断,计入 fetch_errors", function()

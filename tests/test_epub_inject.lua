@@ -158,6 +158,7 @@ T.case("重叠划线只计实际锚点数", function()
     local stats, err = run_inject(book_files(), chapters)
     T.ok(stats, "应成功: " .. tostring(err))
     T.eq(stats.marks, 1, "重叠划线去重后 marks 记实际注入数")
+    T.eq(stats.dropped, 1, "被去重叠丢弃的划线计入 dropped")
 end)
 
 T.case("后缀歧义进 unmatched,同一文件多章叠加注入", function()
