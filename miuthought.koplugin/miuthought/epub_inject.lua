@@ -158,6 +158,7 @@ function M.inject_copy(src, book_id, chapters, opts)
         merges = {},
     }
     local marker_chapters = {}
+    local injected_uids = {}
     local total_underlines = 0
     for _, ch in ipairs(chapters or {}) do
         total_underlines = total_underlines + #(ch.underlines or {})
@@ -177,7 +178,9 @@ function M.inject_copy(src, book_id, chapters, opts)
             local data = chapter_data(book_id, ch)
             -- 叠加章节的 range 是微信侧章节内偏移,对合并文件毫无意义:
             -- 引文对齐不中就丢弃,绝不允许数字兜底把划线画进别章正文。
-            if overlay then data.no_numeric_fallback = true end
+            -- 拆分章(quote_only,一微信章注入多文件)同理:各文件只收
+            -- 引文对齐得上的划线,防错位防跨文件重复。
+            if overlay or ch.quote_only then data.no_numeric_fallback = true end
             local rendered, _, ch_stats = Annotations:new(nil):apply(base, data)
             local mark_count = count_marks(rendered, data.underlines, base)
             stats.quote_aligned = stats.quote_aligned + (ch_stats.quote_aligned or 0)
@@ -192,7 +195,11 @@ function M.inject_copy(src, book_id, chapters, opts)
             end
             if mark_count > 0 then
                 targets[entry_path] = ensure_style(rendered)
-                stats.injected = stats.injected + 1
+                -- 拆分章会产生同 uid 多行,injected 按「有锚点落书的微信章」去重计数。
+                if not injected_uids[data.chapter_uid] then
+                    injected_uids[data.chapter_uid] = true
+                    stats.injected = stats.injected + 1
+                end
                 stats.marks = stats.marks + mark_count
                 marker_chapters[#marker_chapters + 1] = {
                     uid = data.chapter_uid, href = entry_path, marks = mark_count,

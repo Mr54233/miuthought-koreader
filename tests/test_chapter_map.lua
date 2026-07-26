@@ -67,6 +67,47 @@ T.case("巨型省略引文按前缀窗口匹配", function()
     T.eq(#mapped, 1, "前缀命中,整章不再因巨型引文失配")
 end)
 
+T.case("拆分章:一微信章注入多本地文件(quote_only)", function()
+    -- 微信把本地两章合并:引文一半在 cA、一半在 cB(各 ≥2 条)。
+    local files = {
+        ["cA.xhtml"] = [[<html><body><p>甲文件专属引文其一在此处出现。甲文件专属引文其二也在这。</p></body></html>]],
+        ["cB.xhtml"] = [[<html><body><p>乙文件专属引文其一在此处出现。乙文件专属引文其二也在这。</p></body></html>]],
+    }
+    local spine = {{href = "cA.xhtml"}, {href = "cB.xhtml"}}
+    local chapters = {{
+        uid = "9", title = "第一章 合并",
+        underlines = {
+            {range = "0-1", markText = "甲文件专属引文其一"},
+            {range = "1-2", markText = "甲文件专属引文其二"},
+            {range = "2-3", markText = "乙文件专属引文其一"},
+            {range = "3-4", markText = "乙文件专属引文其二"},
+        },
+    }}
+    local mapped, unmatched = ChapterMap.build(spine, function(h) return files[h] end, chapters)
+    T.eq(#unmatched, 0, "无未匹配")
+    T.eq(#mapped, 2, "同一微信章产出两个目标文件")
+    T.eq(mapped[1].chapter_uid, "9", "uid 相同")
+    T.eq(mapped[2].chapter_uid, "9", "uid 相同")
+    T.ok(mapped[1].href ~= mapped[2].href, "两个不同文件")
+    T.ok(mapped[1].quote_only and mapped[2].quote_only, "拆分章一律 quote_only")
+end)
+
+T.case("标题多命中(≤3)救援为多目标 quote_only", function()
+    local files = {
+        ["v.xhtml"] = "<html><body><h1>第一卷 引用了 第一章 惊蛰 的卷首</h1><p>卷首语。</p></body></html>",
+        ["c.xhtml"] = "<html><body><h2>第一章 惊蛰</h2><p>二月二,龙抬头。</p></body></html>",
+    }
+    local spine = {{href = "v.xhtml"}, {href = "c.xhtml"}}
+    local chapters = {{
+        uid = "1", title = "第一章 惊蛰",
+        underlines = {{range = "0-1", markText = "精校后已不存在的引文甲"},
+                      {range = "1-2", markText = "精校后已不存在的引文乙"}},
+    }}
+    local mapped = ChapterMap.build(spine, function(h) return files[h] end, chapters)
+    T.eq(#mapped, 2, "标题两处命中都作为目标(旧算法直接放弃)")
+    T.ok(mapped[1].quote_only, "标题目标 quote_only,引文对齐把关")
+end)
+
 T.case("引文按热度原序取,短名句不被长引文挤出", function()
     local underlines = {
         {range = "0-3", markText = "二月二,龙抬头。"},

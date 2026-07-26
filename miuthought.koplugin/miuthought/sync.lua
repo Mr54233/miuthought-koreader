@@ -160,15 +160,19 @@ function Sync.run(deps)
         map_store = map_store or {}
     end
 
+    -- 缓存值格式:false = 确认无法匹配;{hrefs={...}, num=true|nil} =
+    -- 目标文件列表(拆分章多目标),num 表示单目标强投票、允许数字兜底。
     local known, todo = {}, {}
     for _, ch in ipairs(fetched) do
-        local cached_href = map_store and map_store[tostring(ch.uid)]
-        if cached_href == nil then
+        local cached = map_store and map_store[tostring(ch.uid)]
+        if cached == nil then
             todo[#todo + 1] = ch
-        elseif cached_href == false then
+        elseif cached == false then
             known[tostring(ch.uid)] = false
+        elseif type(cached) == "table" and type(cached.hrefs) == "table" and #cached.hrefs > 0 then
+            known[tostring(ch.uid)] = cached
         else
-            known[tostring(ch.uid)] = tostring(cached_href)
+            todo[#todo + 1] = ch
         end
     end
 
@@ -185,26 +189,45 @@ function Sync.run(deps)
         end, todo)
     end
 
-    -- 合并:按 fetched 原序拼装,新结果回写缓存。
-    local new_by_uid = {}
-    for _, row in ipairs(mapped_new) do new_by_uid[row.chapter_uid] = row end
+    -- 合并:按 fetched 原序拼装(拆分章一 uid 多行),新结果回写缓存。
+    local new_rows_by_uid = {}
+    for _, row in ipairs(mapped_new) do
+        local rows = new_rows_by_uid[row.chapter_uid] or {}
+        rows[#rows + 1] = row
+        new_rows_by_uid[row.chapter_uid] = rows
+    end
     local unmatched_uid = {}
     for _, row in ipairs(unmatched_new) do
         if row.reason == "no_hit" then unmatched_uid[tostring(row.uid)] = true end
     end
     local mapped, unmatched = {}, {}
+    local matched_uids = {}
     for _, ch in ipairs(fetched) do
         local uid = tostring(ch.uid)
-        if known[uid] then
-            mapped[#mapped + 1] = {
-                chapter_uid = uid, href = known[uid],
-                underlines = ch.underlines, review_map = ch.review_map or {},
-            }
-        elseif known[uid] == false then
+        local cached = known[uid]
+        if type(cached) == "table" then
+            matched_uids[uid] = true
+            local quote_only = (not cached.num or #cached.hrefs > 1) or nil
+            for _, href in ipairs(cached.hrefs) do
+                mapped[#mapped + 1] = {
+                    chapter_uid = uid, href = tostring(href),
+                    underlines = ch.underlines, review_map = ch.review_map or {},
+                    quote_only = quote_only,
+                }
+            end
+        elseif cached == false then
             unmatched[#unmatched + 1] = {uid = uid, title = ch.title, reason = "no_hit"}
-        elseif new_by_uid[uid] then
-            mapped[#mapped + 1] = new_by_uid[uid]
-            if map_store then map_store[uid] = new_by_uid[uid].href end
+        elseif new_rows_by_uid[uid] then
+            matched_uids[uid] = true
+            local hrefs = {}
+            for _, row in ipairs(new_rows_by_uid[uid]) do
+                mapped[#mapped + 1] = row
+                hrefs[#hrefs + 1] = row.href
+            end
+            if map_store then
+                map_store[uid] = {hrefs = hrefs,
+                    num = (#hrefs == 1 and not new_rows_by_uid[uid][1].quote_only) or nil}
+            end
         elseif unmatched_uid[uid] then
             unmatched[#unmatched + 1] = {uid = uid, title = ch.title, reason = "no_hit"}
             if map_store then map_store[uid] = false end
@@ -276,7 +299,11 @@ function Sync.run(deps)
         save_failures = save_failures,
         chapters_total = #chapter_list,
         chapters_with_data = #fetched,
-        chapters_matched = #mapped,
+        chapters_matched = (function()
+            local n = 0
+            for _ in pairs(matched_uids) do n = n + 1 end
+            return n
+        end)(),
         chapters_pending = chapters_pending,
         total_underlines = total_underlines,
         total_thought_entries = total_thought_entries,

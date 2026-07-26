@@ -8,7 +8,7 @@ local ChapterMap = {}
 -- 匹配算法版本:任何影响匹配结果的改动(引文窗口、投票规则、目录页判定、
 -- 归一化规则)都必须 +1。映射缓存把它写进指纹,算法一改缓存整体作废——
 -- 否则旧算法缓存下来的「匹配失败」会永久生效,改进永远轮不到那些章节。
-ChapterMap.ALGO_VERSION = 4
+ChapterMap.ALGO_VERSION = 5
 
 local ENTITIES = {
     amp = "&", lt = "<", gt = ">", quot = '"', apos = "'",
@@ -163,37 +163,53 @@ function ChapterMap.build(spine, read_text, chapters)
         collectgarbage("step", 400)
     end
 
+    -- 一个微信章可以映射到多个本地文件(实测:微信版《剑来》把本地两章
+    -- 合并成一章,单文件模型让每章后半的划线永远落不进书)。
+    -- 多目标/标题兜底目标一律 quote_only:各文件只注入能在该文件里
+    -- 引文对齐的划线,禁用数字兜底,防止错位与跨文件重复。
+    local MAX_TARGETS = 4
     local mapped, unmatched = {}, {}
     for ci, ch in ipairs(chapters) do
         local underlines = ch.underlines or {}
         if #underlines == 0 then
             unmatched[#unmatched + 1] = {uid = tostring(ch.uid or ""), title = ch.title, reason = "no_data"}
         else
-            local best_href, best_score, tied = nil, 0, false
+            -- 统一定案规则:得分 ≥ min(2, 引文数) 的文件都是注入目标。
+            -- 多个强档文件平分不是歧义,恰是「微信合并章拆在多个本地文件」
+            -- 的正常信号(各半引文各中一半)。
+            -- 弱证据仍不定案:多条引文只中 1 条是俗语复现的孤证
+            -- (真实翻车:《惊蛰》错投《日出》),转标题兜底;
+            -- 单引文命中多个文件才是真歧义,放弃投票。
+            local strong_min = math.min(2, #quotes_list[ci])
+            local targets = {}
+            local vote_single = false
             for _, entry in ipairs(scores[ci] or {}) do
-                if entry.score > best_score then
-                    best_href, best_score, tied = entry.href, entry.score, false
-                elseif entry.score == best_score and entry.score > 0 and entry.href ~= best_href then
-                    tied = true
+                if entry.score >= strong_min and #targets < MAX_TARGETS then
+                    targets[#targets + 1] = entry.href
                 end
             end
-            if tied then best_href = nil end
-            -- 弱证据不定案:多条引文只中 1 条,很可能是俗语/名句在别章复现的
-            -- 孤证(真实翻车:《惊蛰》5 条引文 4 条被精校差异灭掉,剩下的
-            -- 「命里有时终须有」把整章错投给《日出》)。至少 2 条支持,
-            -- 或该章本来只有 1 条引文且命中,才允许直接定案;否则转标题兜底。
-            if best_href and best_score < math.min(2, #quotes_list[ci]) then
-                best_href = nil
-            end
-            if not best_href then
+            if strong_min == 1 and #targets > 1 then targets = {} end
+            if #targets > 0 then
+                vote_single = #targets == 1
+            else
+                -- 标题兜底放宽到 1~3 个命中:合并章/卷首引用会让标题出现在
+                -- 多个文件里,quote_only 把关后多注不错,只会多救回。
                 local hits = title_hits[ci] or {}
-                if #hits == 1 then best_href = hits[1] end
+                if #hits >= 1 and #hits <= 3 then
+                    for _, href in ipairs(hits) do targets[#targets + 1] = href end
+                end
             end
-            if best_href then
-                mapped[#mapped + 1] = {
-                    chapter_uid = tostring(ch.uid or ""), href = best_href,
-                    underlines = underlines, review_map = ch.review_map or {},
-                }
+            if #targets > 0 then
+                -- 只有「投票强证据 + 单目标」保留数字兜底(同版书受益);
+                -- 其余场景数字偏移不可信,一律 quote_only。
+                local quote_only = not vote_single or nil
+                for _, href in ipairs(targets) do
+                    mapped[#mapped + 1] = {
+                        chapter_uid = tostring(ch.uid or ""), href = href,
+                        underlines = underlines, review_map = ch.review_map or {},
+                        quote_only = quote_only,
+                    }
+                end
             else
                 unmatched[#unmatched + 1] = {uid = tostring(ch.uid or ""), title = ch.title, reason = "no_hit"}
             end
