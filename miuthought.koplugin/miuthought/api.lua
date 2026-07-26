@@ -75,9 +75,11 @@ local function unique_candidates(value)
         local key = type(v) .. ":" .. tostring(v)
         if not seen[key] then seen[key] = true; out[#out + 1] = v end
     end
-    add(raw)
+    -- 数字候选排最前:原版链路里 chapterUid 一路是数字,网关按数字实测过;
+    -- 字符串候选只作兜底(候选间的自动重试只认 params error 文案)。
     local number = tonumber(raw)
     if number then add(number) end
+    add(raw)
     if raw ~= nil then add(tostring(raw)) end
     return out
 end

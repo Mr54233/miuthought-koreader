@@ -37,6 +37,13 @@ function Sync.run(deps)
     local hard_failures, partial_errors = 0, 0
     local thoughts_saved, save_failures = 0, 0
     local consecutive_hard = 0
+    -- 记住最后一次真实错误:失败消息必须告诉用户到底错在哪,不能只说「网络失败」。
+    local last_error
+    local function short_err(text)
+        text = tostring(text or "未知错误"):gsub("^.-%.lua:%d+:%s*", "")
+        if #text > 160 then text = text:sub(1, 160) .. "…" end
+        return text
+    end
     for i, ch in ipairs(chapter_list) do
         if not step("fetch", i, #chapter_list, ch.title) then return nil, "已取消" end
         local good, data = pcall(function()
@@ -65,19 +72,27 @@ function Sync.run(deps)
         else
             hard_failures = hard_failures + 1
             consecutive_hard = consecutive_hard + 1
+            if not good then
+                last_error = tostring(data)
+            elseif type(data) == "table" then
+                last_error = tostring((data.errors or {})[1] or last_error or "接口返回异常")
+            end
             -- 断网熔断:连续多章整章失败(每章重试要吃满超时)不能逐章磨完全书。
             -- 最后一章失败时不熔断,让已取到的数据走完正常出口。
             if consecutive_hard >= 3 and i < #chapter_list then
-                return nil, string.format("网络连续 %d 章拉取失败,已中止同步;请检查网络后重试", consecutive_hard)
+                return nil, string.format("连续 %d 章拉取失败,已中止同步。\n最后错误:%s",
+                    consecutive_hard, short_err(last_error))
             end
         end
     end
     if hard_failures >= #chapter_list then
-        return nil, "划线拉取失败(共 " .. tostring(hard_failures) .. " 章),请检查网络后重试"
+        return nil, string.format("划线拉取失败(共 %d 章)。\n最后错误:%s",
+            hard_failures, short_err(last_error))
     end
     if total_underlines == 0 then
         if hard_failures > 0 then
-            return nil, string.format("有 %d 章拉取失败,已成功的章节没有划线,请检查网络后重试", hard_failures)
+            return nil, string.format("有 %d 章拉取失败,已成功的章节没有划线。\n最后错误:%s",
+                hard_failures, short_err(last_error))
         end
         return nil, "这本书在微信读书里没有划线"
     end
