@@ -2,7 +2,7 @@ T.case("stub 环境能加载现有纯 Lua 模块", function()
     local U = require("miuthought.util")
     T.eq(U.trim("  x  "), "x", "util.trim")
     local Thoughts = require("miuthought.thoughts")
-    T.eq(Thoughts.href("b1", "c2", "3-9"), "#miuthought-6231.6332.332d39", "thoughts.href hex")
+    T.eq(Thoughts.href("b1", "c2", "3-9"), "#miuxiang-6231.6332.332d39", "thoughts.href hex(专属前缀,与原版觅阅不冲突)")
     local Annotations = require("miuthought.annotations")
     local html = "<html><body><p>春江潮水连海平,海上明月共潮生。</p></body></html>"
     local data = {

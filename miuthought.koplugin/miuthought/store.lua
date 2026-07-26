@@ -35,7 +35,16 @@ function Store:new(options)
         covers_dir=data.."/covers",
         temp_dir=data.."/temp",
         updates_dir=data.."/updates",
-        settings_path=options.settings_path or (DataStorage:getSettingsDir().."/miuread.lua"),
+        -- 设置文件与原版觅阅分家:LuaSettings 是整文件重写,两个插件共用一份
+        -- 会互相覆盖。首次启动从旧文件迁移(登录态/绑定原样带过来)。
+        settings_path=options.settings_path or (function()
+            local mine=DataStorage:getSettingsDir().."/miuthought.lua"
+            if not U.file_exists(mine) then
+                local legacy=DataStorage:getSettingsDir().."/miuread.lua"
+                if U.file_exists(legacy) then U.copy_file(legacy,mine) end
+            end
+            return mine
+        end)(),
         download_state_path=data.."/download-state.json",
         isolated=options.isolated==true,
     },self)

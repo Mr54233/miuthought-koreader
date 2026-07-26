@@ -121,8 +121,10 @@ local function utf8_slice(value, first, last)
     return table.concat(out)
 end
 
+-- 锚点前缀必须与原版觅阅(miuthought-)、微读(wrthought-)不同:
+-- 三个插件可能同装,各自的 tap 拦截只认领自己的前缀才能共存。
 function Thoughts.anchor(book_id, chapter_uid, range)
-    return "miuthought-" .. hex_encode(book_id) .. "." .. hex_encode(chapter_uid) .. "." .. hex_encode(range)
+    return "miuxiang-" .. hex_encode(book_id) .. "." .. hex_encode(chapter_uid) .. "." .. hex_encode(range)
 end
 
 function Thoughts.href(book_id, chapter_uid, range)
@@ -134,9 +136,9 @@ function Thoughts.mark_class(range)
 end
 
 function Thoughts.parse_href(href)
-    local anchor = tostring(href or ""):match("#?(miuthought%-[%x%.]+)")
+    local anchor = tostring(href or ""):match("#?(miuxiang%-[%x%.]+)")
     if not anchor then return nil end
-    local b, c, r = anchor:match("^miuthought%-([%x]+)%.([%x]+)%.([%x]+)$")
+    local b, c, r = anchor:match("^miuxiang%-([%x]+)%.([%x]+)%.([%x]+)$")
     if not b then return nil end
     local book_id, chapter_uid, range = hex_decode(b), hex_decode(c), hex_decode(r)
     if not book_id or not chapter_uid or not range then return nil end
