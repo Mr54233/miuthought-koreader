@@ -114,8 +114,9 @@ end
 -- 实际落进正文的锚点数:按划线 range 逐个对比注入前后 data-miu-range 的出现次数。
 -- (annotations 的 dropped 不含去重叠环节丢弃的划线,直接数结果才准;
 -- 同一文件叠加多章时按出现次数差对比,跨章同 range 键也不误判。)
+-- 第二返回值:落锚的 range 键集合,供跨文件聚合「唯一划线」的着落。
 local function count_marks(rendered, underlines, base)
-    local n, seen = 0, {}
+    local n, seen, hit = 0, {}, {}
     for _, row in ipairs(underlines or {}) do
         local key = range_of(row)
         if key ~= "" and not seen[key] then
@@ -123,10 +124,11 @@ local function count_marks(rendered, underlines, base)
             local needle = 'data-miu-range="' .. key .. '"'
             if count_occurrences(rendered, needle) > (base and count_occurrences(base, needle) or 0) then
                 n = n + 1
+                hit[key] = true
             end
         end
     end
-    return n
+    return n, hit
 end
 
 local function chapter_data(book_id, ch)
@@ -232,6 +234,10 @@ function M.inject_copy(src, book_id, chapters, opts)
     end
     local marker_chapters = {}
     local injected_uids = {}
+    -- 跨文件聚合每条划线的着落:拆分章一章对多文件,同一条划线在没对齐的文件里
+    -- 各计一次 unlocated,直接累加会虚高数倍(真机:4 万条划线报 3.2 万未注入,
+    -- 三项相加超过总数)。唯一划线在任一目标文件落锚或被重叠合并,即算有着落。
+    local uid_track = {}   -- [uid] = {total = {range=true}, resolved = {range=true}}
     local total_entries = #meta.names
     local seen_entries = 0
     local written = {["mimetype"] = true, [M.MARKER] = true}
@@ -258,12 +264,24 @@ function M.inject_copy(src, book_id, chapters, opts)
                         -- 引文对齐得上的划线,防错位防跨文件重复。
                         if injected_before or ch.quote_only then data.no_numeric_fallback = true end
                         local rendered, _, ch_stats = Annotations:new(nil):apply(content, data)
-                        local mark_count = count_marks(rendered, data.underlines, content)
+                        local mark_count, hit_keys = count_marks(rendered, data.underlines, content)
+                        local track = uid_track[data.chapter_uid]
+                        if not track then
+                            track = {total = {}, resolved = {}}
+                            uid_track[data.chapter_uid] = track
+                        end
+                        for _, row in ipairs(data.underlines) do
+                            local key = range_of(row)
+                            if key ~= "" then track.total[key] = true end
+                        end
+                        for key in pairs(hit_keys) do track.resolved[key] = true end
+                        for _, key in ipairs(ch_stats.overlapped_keys or {}) do
+                            track.resolved[tostring(key)] = true
+                        end
                         stats.quote_aligned = stats.quote_aligned + (ch_stats.quote_aligned or 0)
                         stats.numeric = stats.numeric + (ch_stats.numeric or 0)
                         stats.dropped = stats.dropped + (ch_stats.dropped or 0)
                         stats.overlapped = stats.overlapped + (ch_stats.overlapped or 0)
-                        stats.unlocated = stats.unlocated + (ch_stats.unlocated or 0)
                         for _, merge in ipairs(ch_stats.merged or {}) do
                             stats.merges[#stats.merges + 1] = {
                                 uid = data.chapter_uid, from = merge.from, into = merge.into,
@@ -301,6 +319,13 @@ function M.inject_copy(src, book_id, chapters, opts)
     end
     reader:close()
     reader = nil
+
+    -- 未注入 = 唯一划线里既没落锚也没被重叠合并的(跨全部目标文件聚合)。
+    for _, track in pairs(uid_track) do
+        for key in pairs(track.total) do
+            if not track.resolved[key] then stats.unlocated = stats.unlocated + 1 end
+        end
+    end
 
     if stats.injected == 0 then
         writer:close()

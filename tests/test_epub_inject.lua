@@ -253,6 +253,28 @@ T.case("叠加章节引文不中时丢弃,不做数字兜底", function()
     T.eq(stats.unlocated, 1, "分项:引文不中的叠加划线计入未定位")
 end)
 
+T.case("拆分章跨文件按唯一划线计未注入", function()
+    -- 一个微信章拆到两个本地文件(quote_only):划线 A 只在 ch1、划线 B 只在
+    -- ch2 对得上。旧算法每个文件各报一条 unlocated(共 2),唯一划线口径应为 0。
+    local chapters = {
+        {chapter_uid = "7", href = "Text/ch1.xhtml", quote_only = true,
+         underlines = {
+            {range = "0-7", markText = "春江潮水连海平"},
+            {range = "100-107", markText = "滟滟随波千万里"},
+         }, review_map = {}},
+        {chapter_uid = "7", href = "Text/ch2.xhtml", quote_only = true,
+         underlines = {
+            {range = "0-7", markText = "春江潮水连海平"},
+            {range = "100-107", markText = "滟滟随波千万里"},
+         }, review_map = {}},
+    }
+    local stats, err = run_inject(book_files(), chapters)
+    T.ok(stats, "应成功: " .. tostring(err))
+    T.eq(stats.injected, 1, "同 uid 拆分注入只计一章")
+    T.eq(stats.marks, 2, "两条划线各落一个文件")
+    T.eq(stats.unlocated, 0, "每条划线都有着落,未注入必须为 0")
+end)
+
 T.case("叠加章节同 range 键按出现次数差计数", function()
     local chapters = {
         {chapter_uid = "42", href = "Text/ch1.xhtml",

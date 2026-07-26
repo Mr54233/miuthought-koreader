@@ -616,15 +616,19 @@ function SyncTask:start(task, on_progress, on_done)
             }
             if not report then error(sync_err or "同步失败") end
             -- 状态落盘:阅读端据此做「继续拉取」菜单与自动分批触发。
-            local pending = tonumber(report.chapters_pending) or 0
-            local state_ok, state_json = pcall(JsonChild.encode, {
-                total = report.chapters_total, pending = pending, updated_at = os.time(),
-            })
-            if state_ok then UChild.atomic_write(cache_dir .. "/state.json", state_json, true) end
-            -- 全部章节拉完才算「完成」:打标记保留缓存供离线重注,
-            -- 下次全新同步看到标记会清空重拉;分批未完/取消/失败不打标记=续传。
-            if pending == 0 and mode ~= "reinject" then
-                UChild.atomic_write(completed_marker, tostring(os.time()), true)
+            -- 离线重注不写:它不碰网络,pending 恒为 0,写进去会把「还剩 N 章」
+            -- 的真实批次状态抹掉(真机翻车:重注后续拉菜单消失)。
+            if mode ~= "reinject" then
+                local pending = tonumber(report.chapters_pending) or 0
+                local state_ok, state_json = pcall(JsonChild.encode, {
+                    total = report.chapters_total, pending = pending, updated_at = os.time(),
+                })
+                if state_ok then UChild.atomic_write(cache_dir .. "/state.json", state_json, true) end
+                -- 全部章节拉完才算「完成」:打标记保留缓存供离线重注,
+                -- 下次全新同步看到标记会清空重拉;分批未完/取消/失败不打标记=续传。
+                if pending == 0 then
+                    UChild.atomic_write(completed_marker, tostring(os.time()), true)
+                end
             end
             return {report = report, auth = store:auth()}
         end, debug.traceback)

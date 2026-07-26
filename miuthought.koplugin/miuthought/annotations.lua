@@ -518,6 +518,9 @@ local function intervals(data, visible_count, index)
     table.sort(out, function(x,y) if x.a==y.a then return x.b<y.b end return x.a<y.a end)
     local clean, cursor = {}, -1
     local merged = {}
+    -- 全部被重叠合并的划线键(不止带想法的):上层跨文件统计「唯一划线是否
+    -- 有着落」需要它,重叠合并算有着落,不算未注入。
+    local overlapped_keys = {}
     for _, it in ipairs(out) do
         if it.a >= cursor then
             clean[#clean + 1] = it; cursor = it.b
@@ -527,6 +530,7 @@ local function intervals(data, visible_count, index)
             -- 并记录 from→into 映射,由上层把想法并进存活锚点的组。
             stats.dropped = stats.dropped + 1
             stats.overlapped = stats.overlapped + 1
+            overlapped_keys[#overlapped_keys + 1] = it.key
             local survivor = clean[#clean]
             if it.thought and survivor then
                 survivor.thought = true
@@ -535,6 +539,7 @@ local function intervals(data, visible_count, index)
         end
     end
     stats.merged = merged
+    stats.overlapped_keys = overlapped_keys
     return clean, stats
 end
 
@@ -607,6 +612,7 @@ function Annotations:apply(html, data)
         overlapped=alignment and alignment.overlapped or 0,
         unlocated=alignment and alignment.unlocated or 0,
         merged=alignment and alignment.merged or {},
+        overlapped_keys=alignment and alignment.overlapped_keys or {},
     }
 end
 
