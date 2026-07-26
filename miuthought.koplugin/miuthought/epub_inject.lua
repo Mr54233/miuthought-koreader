@@ -94,9 +94,19 @@ local function range_of(row)
     return (kind == "string" or kind == "number") and tostring(value) or ""
 end
 
--- 实际落进正文的锚点数:按划线 range 逐个对比注入前后的 data-miu-range。
+local function count_occurrences(text, needle)
+    local n, from = 0, 1
+    while true do
+        local at = text:find(needle, from, true)
+        if not at then return n end
+        n = n + 1
+        from = at + #needle
+    end
+end
+
+-- 实际落进正文的锚点数:按划线 range 逐个对比注入前后 data-miu-range 的出现次数。
 -- (annotations 的 dropped 不含去重叠环节丢弃的划线,直接数结果才准;
--- 同一文件叠加多章时,与 base 对比才不会把前面章节的锚点算进来。)
+-- 同一文件叠加多章时按出现次数差对比,跨章同 range 键也不误判。)
 local function count_marks(rendered, underlines, base)
     local n, seen = 0, {}
     for _, row in ipairs(underlines or {}) do
@@ -104,7 +114,7 @@ local function count_marks(rendered, underlines, base)
         if key ~= "" and not seen[key] then
             seen[key] = true
             local needle = 'data-miu-range="' .. key .. '"'
-            if rendered:find(needle, 1, true) and not (base and base:find(needle, 1, true)) then
+            if count_occurrences(rendered, needle) > (base and count_occurrences(base, needle) or 0) then
                 n = n + 1
             end
         end
@@ -155,6 +165,7 @@ function M.inject_copy(src, book_id, chapters, opts)
             stats.unmatched[#stats.unmatched + 1] = tostring(ch.chapter_uid or ch.href or "?")
         else
             -- 多个微信章节可以落在同一 spine 文件:在前面章节的注入结果上叠加。
+            local overlay = targets[entry_path] ~= nil
             local base = targets[entry_path]
             if not base then
                 local html, read_err = EpubReader.read(meta, entry_path, opts.archiver)
@@ -162,6 +173,9 @@ function M.inject_copy(src, book_id, chapters, opts)
                 base = html
             end
             local data = chapter_data(book_id, ch)
+            -- 叠加章节的 range 是微信侧章节内偏移,对合并文件毫无意义:
+            -- 引文对齐不中就丢弃,绝不允许数字兜底把划线画进别章正文。
+            if overlay then data.no_numeric_fallback = true end
             local rendered, _, ch_stats = Annotations:new(nil):apply(base, data)
             local mark_count = count_marks(rendered, data.underlines, base)
             if mark_count > 0 then

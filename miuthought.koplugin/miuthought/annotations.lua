@@ -493,7 +493,9 @@ local function intervals(data, visible_count, index)
             end
             if a then
                 stats.quote_aligned = stats.quote_aligned + 1
-            else
+            elseif not data.no_numeric_fallback then
+                -- 叠加注入合并文件时(epub_inject 置 no_numeric_fallback),
+                -- 章节内数字偏移相对整个文件已失真,引文不中宁可丢弃。
                 a, b = numeric_interval(raw_a, raw_b, visible_count, index)
                 stats.numeric = stats.numeric + 1
             end

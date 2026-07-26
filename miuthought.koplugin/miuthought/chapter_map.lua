@@ -1,6 +1,8 @@
 -- 章节映射:用划线引文在本地 spine 文档里投票,把微信读书章节映射到 zip 内 href。
--- 引文和文档正文走同一套 normalize(剥标签、解常用实体、去全部空白),
--- 这样换行/排版差异不影响命中;引文全不中时用章节标题兜底。
+-- 引文和文档正文走同一套 normalize(剥标签、解实体、去全部空白),
+-- 这样换行/排版/实体化差异不影响命中;引文全不中时用章节标题兜底(避开目录页)。
+local logger = require("logger")
+
 local ChapterMap = {}
 
 local ENTITIES = {
@@ -9,16 +11,30 @@ local ENTITIES = {
     mdash = "—", ndash = "–", ldquo = "“", rdquo = "”", lsquo = "‘", rsquo = "’",
 }
 
+local function utf8_char(code)
+    if not code or code < 0 or code > 0x10FFFF
+        or (code >= 0xD800 and code <= 0xDFFF) then
+        return ""
+    end
+    if code < 0x80 then return string.char(code) end
+    if code < 0x800 then
+        return string.char(0xC0 + math.floor(code / 0x40), 0x80 + code % 0x40)
+    end
+    if code < 0x10000 then
+        return string.char(0xE0 + math.floor(code / 0x1000),
+            0x80 + math.floor(code / 0x40) % 0x40, 0x80 + code % 0x40)
+    end
+    return string.char(0xF0 + math.floor(code / 0x40000),
+        0x80 + math.floor(code / 0x1000) % 0x40,
+        0x80 + math.floor(code / 0x40) % 0x40, 0x80 + code % 0x40)
+end
+
 function ChapterMap.normalize(value)
     local text = tostring(value or ""):gsub("<[^>]*>", " ")
-    text = text:gsub("&#[xX](%x+);", function(hex)
-        local code = tonumber(hex, 16)
-        return (code and code < 0x80) and string.char(code) or ""
-    end)
-    text = text:gsub("&#(%d+);", function(dec)
-        local code = tonumber(dec, 10)
-        return (code and code < 0x80) and string.char(code) or ""
-    end)
+    -- 数值实体解码成字面 UTF-8:实体化编码的中文正文(&#x8FD9; 之类)必须还原,
+    -- 否则整章 normalize 成空串,引文永不命中。
+    text = text:gsub("&#[xX](%x+);", function(hex) return utf8_char(tonumber(hex, 16)) end)
+    text = text:gsub("&#(%d+);", function(dec) return utf8_char(tonumber(dec, 10)) end)
     text = text:gsub("&(%a+);", function(name) return ENTITIES[name] or "" end)
     -- 去掉 ASCII 空白与常见排版空白(nbsp、全角空格、零宽、BOM)。
     text = text:gsub("%s+", "")
@@ -34,6 +50,9 @@ local function scalar_str(v)
     return ""
 end
 
+-- 参与投票的引文至少 12 字节(约 4 个汉字):太短的句子在多个文件里都会出现,只会投错票。
+local MIN_QUOTE_BYTES = 12
+
 function ChapterMap.quotes_of(underlines, limit)
     limit = tonumber(limit) or 5
     local out, seen = {}, {}
@@ -41,7 +60,7 @@ function ChapterMap.quotes_of(underlines, limit)
         if type(row) == "table" then
             for _, key in ipairs({"markText", "bookmarkText", "rangeText", "abstract", "text", "content"}) do
                 local quote = ChapterMap.normalize(scalar_str(row[key]))
-                if #quote >= 6 and not seen[quote] then
+                if #quote >= MIN_QUOTE_BYTES and not seen[quote] then
                     seen[quote] = true
                     out[#out + 1] = quote
                     break
@@ -59,9 +78,40 @@ function ChapterMap.build(spine, read_text, chapters)
     local function text_of(href)
         if cache[href] == nil then
             local ok, html = pcall(read_text, href)
-            cache[href] = (ok and html) and ChapterMap.normalize(html) or false
+            if ok and html then
+                cache[href] = ChapterMap.normalize(html)
+            else
+                logger.warn("[MiuThought][ChapterMap] 读取章节失败",
+                    "href=", tostring(href), "err=", tostring(html))
+                cache[href] = false
+            end
         end
         return cache[href] or nil
+    end
+
+    -- 全部章节标题(规范化、去重)用于识别目录页:一个文件若包含大半章节标题,
+    -- 它是目录/导航页,标题兜底绝不能落在上面。
+    local all_titles = {}
+    do
+        local seen = {}
+        for _, ch in ipairs(chapters or {}) do
+            local title = ChapterMap.normalize(ch.title)
+            if #title >= 6 and not seen[title] then
+                seen[title] = true
+                all_titles[#all_titles + 1] = title
+            end
+        end
+    end
+    local toc_threshold = math.max(2, math.ceil(#all_titles * 0.5))
+    local function is_toc_like(text)
+        local count = 0
+        for _, title in ipairs(all_titles) do
+            if text:find(title, 1, true) then
+                count = count + 1
+                if count >= toc_threshold then return true end
+            end
+        end
+        return false
     end
 
     local mapped, unmatched = {}, {}
@@ -71,7 +121,7 @@ function ChapterMap.build(spine, read_text, chapters)
             unmatched[#unmatched + 1] = {uid = tostring(ch.uid or ""), title = ch.title, reason = "no_data"}
         else
             local quotes = ChapterMap.quotes_of(underlines)
-            local best_href, best_score = nil, 0
+            local best_href, best_score, tied = nil, 0, false
             for _, item in ipairs(spine or {}) do
                 local text = text_of(item.href)
                 if text and text ~= "" then
@@ -79,16 +129,26 @@ function ChapterMap.build(spine, read_text, chapters)
                     for _, quote in ipairs(quotes) do
                         if text:find(quote, 1, true) then score = score + 1 end
                     end
-                    if score > best_score then best_href, best_score = item.href, score end
+                    if score > best_score then
+                        best_href, best_score, tied = item.href, score, false
+                    elseif score == best_score and score > 0 and item.href ~= best_href then
+                        tied = true
+                    end
                 end
             end
-            if best_score == 0 then
+            if tied then best_href = nil end
+            if not best_href then
                 local title = ChapterMap.normalize(ch.title)
                 if #title >= 6 then
+                    local hits = {}
                     for _, item in ipairs(spine or {}) do
                         local text = text_of(item.href)
-                        if text and text:find(title, 1, true) then best_href = item.href; break end
+                        if text and text:find(title, 1, true) and not is_toc_like(text) then
+                            hits[#hits + 1] = item.href
+                            if #hits > 1 then break end
+                        end
                     end
+                    if #hits == 1 then best_href = hits[1] end
                 end
             end
             if best_href then

@@ -28,7 +28,7 @@ function Sync.run(deps)
     if not step("chapters", 0, 1, "获取章节列表") then return nil, "已取消" end
     local ok, chapters_raw = pcall(function() return deps.api:chapters(deps.book_id) end)
     if not ok then return nil, "获取章节列表失败:" .. tostring(chapters_raw) end
-    local chapter_list = Binding.normalize_chapters(chapters_raw)
+    local chapter_list = Binding.normalize_chapters(chapters_raw, deps.book_id)
     if #chapter_list == 0 then return nil, "微信读书返回的章节列表为空" end
 
     local fetched = {}

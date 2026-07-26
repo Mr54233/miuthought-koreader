@@ -124,7 +124,12 @@ function Plugin:bind_search(path)
             local q=U.trim(d:getInputText()); UIManager:close(d)
             if q=="" then self:info("请输入书名") return end
             self:online("bind_search",function()
+                -- 先把「正在搜索」画上屏,再发阻塞请求(主线程同步 http)。
+                local searching=InfoMessage:new{text="正在搜索「"..q.."」…"}
+                UIManager:show(searching)
+                UIManager:scheduleIn(0.1,self:safe("bind_search_run",function()
                 local ok,data=pcall(function() return self.api:search(q) end)
+                UIManager:close(searching)
                 if not ok then self:info("搜索失败:\n"..U.first_line(data)) return end
                 local rows=Binding.normalize_search(data)
                 if #rows==0 then self:info("没有搜到「"..q.."」,换个关键词试试") return end
@@ -141,6 +146,7 @@ function Plugin:bind_search(path)
                 end
                 menu=Menu:new{title="选择要绑定的书",item_table=items,is_borderless=true,title_bar_fm_style=true}
                 UIManager:show(menu)
+                end))
             end)
         end},
     }}}

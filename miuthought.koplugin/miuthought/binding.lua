@@ -21,34 +21,69 @@ end
 
 function Binding.normalize_search(data)
     local out = {}
+    local function add_row(row)
+        if type(row) ~= "table" then return end
+        local info = type(row.bookInfo) == "table" and row.bookInfo or row
+        local book_id = scalar_str(info.bookId or info.book_id)
+        if book_id ~= "" then
+            out[#out + 1] = {
+                book_id = book_id,
+                title = scalar_str(info.title),
+                author = scalar_str(info.author),
+            }
+        end
+    end
     for _, row in ipairs(rows_of(data, {"books", "results", "updated"})) do
-        if type(row) == "table" then
-            local info = type(row.bookInfo) == "table" and row.bookInfo or row
-            local book_id = scalar_str(info.bookId or info.book_id)
-            if book_id ~= "" then
-                out[#out + 1] = {
-                    book_id = book_id,
-                    title = scalar_str(info.title),
-                    author = scalar_str(info.author),
-                }
-            end
+        -- /store/search 真实响应是分组形状:results=[{type=..., books=[{bookInfo=...}]}],
+        -- 分组行自身无 bookId,需要下钻 books(原 miuread 主菜单同款处理)。
+        if type(row) == "table" and type(row.books) == "table"
+            and scalar_str(row.bookId or row.book_id) == "" then
+            for _, sub in ipairs(row.books) do add_row(sub) end
+        else
+            add_row(row)
         end
     end
     return out
 end
 
-function Binding.normalize_chapters(data)
+local function chapter_uid_of(row)
+    if type(row) ~= "table" then return "" end
+    return scalar_str(row.chapterUid or row.chapterId or row.uid)
+end
+
+-- 经典章节接口按「书记录」返回:{data=[{bookId=..., updated=[章节...]}]},
+-- 记录行没有 chapterUid;按 book_id 选中目标记录后下钻内层数组。
+local function chapter_rows(data, book_id)
+    local rows = rows_of(data, {"data", "updated", "chapters", "chapterInfos"})
+    if #rows == 0 or chapter_uid_of(rows[1]) ~= "" then return rows end
+    local function inner_of(record)
+        if type(record) ~= "table" then return nil end
+        for _, key in ipairs({"updated", "chapterInfos", "chapters"}) do
+            if type(record[key]) == "table" then return record[key] end
+        end
+        return nil
+    end
+    local fallback
+    for _, record in ipairs(rows) do
+        local inner = inner_of(record)
+        if inner then
+            fallback = fallback or inner
+            if book_id and scalar_str(record.bookId) == tostring(book_id) then return inner end
+        end
+    end
+    return fallback or rows
+end
+
+function Binding.normalize_chapters(data, book_id)
     local out = {}
-    for index, row in ipairs(rows_of(data, {"data", "updated", "chapters"})) do
-        if type(row) == "table" then
-            local uid = scalar_str(row.chapterUid or row.chapterId or row.uid)
-            if uid ~= "" then
-                out[#out + 1] = {
-                    uid = uid,
-                    title = scalar_str(row.title),
-                    idx = tonumber(row.chapterIdx) or index,
-                }
-            end
+    for index, row in ipairs(chapter_rows(data, book_id)) do
+        local uid = chapter_uid_of(row)
+        if uid ~= "" then
+            out[#out + 1] = {
+                uid = uid,
+                title = scalar_str(row.title),
+                idx = tonumber(row.chapterIdx) or index,
+            }
         end
     end
     table.sort(out, function(a, b) return a.idx < b.idx end)

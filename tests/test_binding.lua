@@ -21,6 +21,39 @@ T.case("normalize_search 容错三种形状", function()
     T.eq(#Binding.normalize_search("oops"), 0, "非表安全")
 end)
 
+T.case("normalize_search 处理 /store/search 真实分组形状", function()
+    local grouped = {totalCount = 2, results = {
+        {type = 1, books = {
+            {bookInfo = {bookId = "b1", title = "春江花月夜", author = "张若虚"}},
+            {bookInfo = {bookId = "b2", title = "春江水暖", author = "某人"}},
+        }},
+        {type = 2, books = {{bookInfo = {bookId = "b3", title = "第三本"}}}},
+    }}
+    local rows = Binding.normalize_search(grouped)
+    T.eq(#rows, 3, "分组 results[].books[] 全部下钻")
+    T.eq(rows[1].book_id, "b1", "组1书1")
+    T.eq(rows[3].book_id, "b3", "组2书1")
+end)
+
+T.case("normalize_chapters 处理书记录嵌套与 chapterInfos", function()
+    local nested = {data = {
+        {bookId = "other", updated = {{chapterUid = 99, title = "别的书"}}},
+        {bookId = "b001", updated = {
+            {chapterUid = 1, title = "第一章", chapterIdx = 1},
+            {chapterUid = 2, title = "第二章", chapterIdx = 2},
+        }},
+    }}
+    local rows = Binding.normalize_chapters(nested, "b001")
+    T.eq(#rows, 2, "按 bookId 选中目标书记录")
+    T.eq(rows[1].uid, "1", "下钻 updated 内层")
+
+    local no_match = Binding.normalize_chapters(nested, "nope")
+    T.eq(no_match[1].uid, "99", "无匹配记录时退回第一条记录")
+
+    local infos = {chapterInfos = {{chapterUid = 5, title = "五"}}}
+    T.eq(Binding.normalize_chapters(infos)[1].uid, "5", "chapterInfos 键")
+end)
+
 T.case("normalize_chapters 容错与排序", function()
     local data = {data = {
         {chapterUid = 2, title = "第二章", chapterIdx = 2},

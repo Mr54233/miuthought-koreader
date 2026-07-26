@@ -218,6 +218,36 @@ T.case("DRM 加密拒绝,字体混淆放行", function()
     T.ok(stats2 ~= nil, "仅字体混淆应放行: " .. tostring(err2))
 end)
 
+T.case("叠加章节引文不中时丢弃,不做数字兜底", function()
+    local chapters = {
+        {chapter_uid = "42", href = "Text/ch1.xhtml",
+         underlines = {{range = "0-7", markText = "春江潮水连海平"}}, review_map = {}},
+        {chapter_uid = "43", href = "Text/ch1.xhtml",
+         underlines = {{range = "0-4", markText = "别章的文字根本不在这个文件里"}}, review_map = {}},
+    }
+    local stats, err, Arc = run_inject(book_files(), chapters)
+    T.ok(stats, "应成功: " .. tostring(err))
+    T.eq(stats.injected, 1, "叠加章节引文不中 → 只有第一章注入")
+    local ch1
+    for _, e in ipairs(STUBS.written(Arc._last_writer)) do
+        if e.path == "OEBPS/Text/ch1.xhtml" then ch1 = e end
+    end
+    T.ok(not ch1.content:find('data-miu-range="0-4"', 1, true), "不得用数字偏移把 43 章划线画进 42 章正文")
+end)
+
+T.case("叠加章节同 range 键按出现次数差计数", function()
+    local chapters = {
+        {chapter_uid = "42", href = "Text/ch1.xhtml",
+         underlines = {{range = "0-7", markText = "春江潮水连海平"}}, review_map = {}},
+        {chapter_uid = "43", href = "Text/ch1.xhtml",
+         underlines = {{range = "0-7", markText = "海上明月共潮生"}}, review_map = {}},
+    }
+    local stats, err = run_inject(book_files(), chapters)
+    T.ok(stats, "应成功: " .. tostring(err))
+    T.eq(stats.injected, 2, "同 range 键的叠加章节也计入注入")
+    T.eq(stats.marks, 2, "出现次数差计数不被键碰撞清零")
+end)
+
 T.case("rename 目标已存在时重试", function()
     local calls = 0
     local stats, err = run_inject(book_files(), CHAPTERS, nil, {
