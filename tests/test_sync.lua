@@ -200,6 +200,23 @@ T.case("映射缓存:续批只匹配新章节", function()
     T.eq(reads2, 0, "全部命中映射缓存,零文件读取")
     T.eq(report2.injected, 1, "缓存映射照常注入")
     T.eq(report2.chapters_matched, 1, "匹配章数一致")
+
+    -- 算法版本变化必须让缓存整体作废,否则旧算法的失败结论永久生效
+    local ChapterMap = require("miuthought.chapter_map")
+    local saved = ChapterMap.ALGO_VERSION
+    ChapterMap.ALGO_VERSION = saved + 1
+    local reads3 = 0
+    local deps3 = make_deps({
+        map_cache_path = cache_file,
+        read_text = function(_, href)
+            reads3 = reads3 + 1
+            return href == "OEBPS/c1.xhtml" and CH1_TEXT or CH2_TEXT
+        end,
+    })
+    local report3 = Sync.run(deps3)
+    ChapterMap.ALGO_VERSION = saved
+    T.ok(report3, "算法升版后仍应成功")
+    T.ok(reads3 > 0, "算法升版后缓存作废,重新匹配")
     os.remove(cache_file)
 end)
 

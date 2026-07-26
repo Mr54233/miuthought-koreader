@@ -5,6 +5,11 @@ local logger = require("logger")
 
 local ChapterMap = {}
 
+-- 匹配算法版本:任何影响匹配结果的改动(引文窗口、投票规则、目录页判定、
+-- 归一化规则)都必须 +1。映射缓存把它写进指纹,算法一改缓存整体作废——
+-- 否则旧算法缓存下来的「匹配失败」会永久生效,改进永远轮不到那些章节。
+ChapterMap.ALGO_VERSION = 3
+
 local ENTITIES = {
     amp = "&", lt = "<", gt = ">", quot = '"', apos = "'",
     nbsp = "", ensp = "", emsp = "", thinsp = "", hellip = "…",

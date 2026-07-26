@@ -146,7 +146,8 @@ function Sync.run(deps)
     -- 只需要匹配没见过的新章节。缓存带源文件指纹,源变了整体作废。
     local map_store, map_signature
     if deps.map_cache_path then
-        map_signature = tostring(U.file_size(src) or 0)
+        -- 指纹 = 源书大小 + 匹配算法版本:换书或改算法都让旧映射作废重建。
+        map_signature = tostring(U.file_size(src) or 0) .. "@" .. tostring(ChapterMap.ALGO_VERSION)
         local raw = U.read_file(deps.map_cache_path, true)
         if raw then
             local ok_decode, decoded = pcall(Json.decode, raw)
