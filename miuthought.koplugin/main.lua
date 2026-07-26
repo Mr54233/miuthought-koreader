@@ -518,40 +518,32 @@ function Plugin:_sync_run(path,bound)
 end
 
 function Plugin:_sync_report(report)
-    -- 漏斗式报告:拉取 → 匹配 → 定位 → 注入 → 想法,每层进出与损耗都写明。
-    local located=(report.quote_aligned or 0)+(report.numeric or 0)
+    -- 用户视角只有三个数:拿到多少、放进书里多少、没放进多少。
+    -- 细节(重叠合并/定位方式/章节匹配)进日志不进对话框。
     local lines={
         "同步完成",
         "",
-        string.format("拉取:%d/%d 章,划线 %d 条、想法 %d 条",
-            report.chapters_with_data or 0,report.chapters_total or 0,
-            report.total_underlines or 0,report.total_thought_entries or 0),
-        string.format("匹配:%d 章对上本地正文",report.chapters_matched or 0),
-        string.format("定位:%d 条找到原文位置(对齐 %d,估算 %d)",
-            located,report.quote_aligned or 0,report.numeric or 0),
-        string.format("注入:%d 处锚点写入 %d 章(重叠划线合并 %d 条)",
-            report.marks or 0,report.injected or 0,report.overlapped or 0),
-        string.format("想法:%d 章已缓存,点虚线即可查看",report.thoughts_saved or 0),
+        string.format("想法 %d 条 · 划线 %d 条",
+            report.total_thought_entries or 0,report.total_underlines or 0),
+        string.format("注入成功:%d 处(%d 章)",report.marks or 0,report.injected or 0),
+        string.format("未注入:%d 条(重复划线或对不上正文)",report.dropped or 0),
     }
-    -- 损失与失败(有才显示)
-    if (report.unlocated or 0)>0 then
-        lines[#lines+1]=string.format("失败:%d 条划线在本地正文找不到对应文字,放弃",report.unlocated)
-    end
-    local misses={}
-    for _,row in ipairs(report.unmatched or {}) do
-        misses[#misses+1]=tostring(row.title~="" and row.title or row.uid)
-    end
-    if #misses>0 then
-        local shown=table.concat(misses,"、",1,math.min(#misses,3))
-        lines[#lines+1]=string.format("失败:%d 章没匹配到本地正文(连带 %d 条划线):%s%s",
-            #misses,report.unmatched_underlines or 0,shown,#misses>3 and " 等" or "")
+    if #(report.unmatched or {})>0 then
+        lines[#lines+1]=string.format("有 %d 章没对上本地书(损失 %d 条)",
+            #report.unmatched,report.unmatched_underlines or 0)
     end
     if (report.fetch_errors or 0)>0 then
-        lines[#lines+1]=string.format("失败:%d 章拉取不完整,重新同步可补",report.fetch_errors)
+        lines[#lines+1]=string.format("有 %d 章没拉全,重新同步可补",report.fetch_errors)
     end
     if (report.save_failures or 0)>0 then
-        lines[#lines+1]=string.format("失败:%d 章想法缓存写盘失败(检查存储空间)",report.save_failures)
+        lines[#lines+1]=string.format("有 %d 章想法没存上(检查存储空间)",report.save_failures)
     end
+    logger.info("[MiuThought][Sync] report",
+        "chapters=",tostring(report.chapters_with_data),"/",tostring(report.chapters_total),
+        "matched=",tostring(report.chapters_matched),
+        "marks=",tostring(report.marks),"aligned=",tostring(report.quote_aligned),
+        "numeric=",tostring(report.numeric),"overlapped=",tostring(report.overlapped),
+        "unlocated=",tostring(report.unlocated))
     lines[#lines+1]=""
     lines[#lines+1]="已替换原书(阅读进度保留)"
     lines[#lines+1]="原版备份:"..tostring(report.backup or "")
