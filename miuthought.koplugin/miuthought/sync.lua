@@ -17,6 +17,7 @@
 local Binding = require("miuthought.binding")
 local ChapterMap = require("miuthought.chapter_map")
 local EpubInject = require("miuthought.epub_inject")
+local Json = require("miuthought.json")
 local U = require("miuthought.util")
 
 local Sync = {}
@@ -141,15 +142,80 @@ function Sync.run(deps)
     end
 
     if not step("map", 0, 1, "匹配本地章节") then return nil, "已取消" end
+    -- 映射结果缓存:章节→文件的映射对同一本源书是稳定的,续批/离线重注
+    -- 只需要匹配没见过的新章节。缓存带源文件指纹,源变了整体作废。
+    local map_store, map_signature
+    if deps.map_cache_path then
+        map_signature = tostring(U.file_size(src) or 0)
+        local raw = U.read_file(deps.map_cache_path, true)
+        if raw then
+            local ok_decode, decoded = pcall(Json.decode, raw)
+            if ok_decode and type(decoded) == "table"
+                and tostring(decoded.signature) == map_signature
+                and type(decoded.map) == "table" then
+                map_store = decoded.map
+            end
+        end
+        map_store = map_store or {}
+    end
+
+    local known, todo = {}, {}
+    for _, ch in ipairs(fetched) do
+        local cached_href = map_store and map_store[tostring(ch.uid)]
+        if cached_href == nil then
+            todo[#todo + 1] = ch
+        elseif cached_href == false then
+            known[tostring(ch.uid)] = false
+        else
+            known[tostring(ch.uid)] = tostring(cached_href)
+        end
+    end
+
     -- 每读一个 spine 文件发一次心跳(只作活动信号,不在文件中途响应取消),
     -- 免得特大书的纯 CPU 匹配被看门狗当成死吊。
     local map_count = 0
     local spine_total = #(meta.spine or {})
-    local mapped, unmatched = ChapterMap.build(meta.spine, function(href)
-        map_count = map_count + 1
-        step("map", map_count, spine_total, href)
-        return deps.read_text(meta, href)
-    end, fetched)
+    local mapped_new, unmatched_new = {}, {}
+    if #todo > 0 then
+        mapped_new, unmatched_new = ChapterMap.build(meta.spine, function(href)
+            map_count = map_count + 1
+            step("map", map_count, spine_total, href)
+            return deps.read_text(meta, href)
+        end, todo)
+    end
+
+    -- 合并:按 fetched 原序拼装,新结果回写缓存。
+    local new_by_uid = {}
+    for _, row in ipairs(mapped_new) do new_by_uid[row.chapter_uid] = row end
+    local unmatched_uid = {}
+    for _, row in ipairs(unmatched_new) do
+        if row.reason == "no_hit" then unmatched_uid[tostring(row.uid)] = true end
+    end
+    local mapped, unmatched = {}, {}
+    for _, ch in ipairs(fetched) do
+        local uid = tostring(ch.uid)
+        if known[uid] then
+            mapped[#mapped + 1] = {
+                chapter_uid = uid, href = known[uid],
+                underlines = ch.underlines, review_map = ch.review_map or {},
+            }
+        elseif known[uid] == false then
+            unmatched[#unmatched + 1] = {uid = uid, title = ch.title, reason = "no_hit"}
+        elseif new_by_uid[uid] then
+            mapped[#mapped + 1] = new_by_uid[uid]
+            if map_store then map_store[uid] = new_by_uid[uid].href end
+        elseif unmatched_uid[uid] then
+            unmatched[#unmatched + 1] = {uid = uid, title = ch.title, reason = "no_hit"}
+            if map_store then map_store[uid] = false end
+        else
+            -- no_data(无划线)章节:不入缓存,下批有数据时再匹配。
+            unmatched[#unmatched + 1] = {uid = uid, title = ch.title, reason = "no_data"}
+        end
+    end
+    if deps.map_cache_path and map_store then
+        local ok_encode, encoded = pcall(Json.encode, {signature = map_signature, map = map_store})
+        if ok_encode then U.atomic_write(deps.map_cache_path, encoded, true) end
+    end
     if #mapped == 0 then
         return nil, "没有任何章节能匹配到本地书,请确认绑定的和本地打开的是同一本书"
     end

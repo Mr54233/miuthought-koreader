@@ -168,6 +168,41 @@ T.case("引文全不匹配本地书", function()
     T.ok(report == nil and tostring(err):find("匹配", 1, true), "映射失败报错: " .. tostring(err))
 end)
 
+T.case("映射缓存:续批只匹配新章节", function()
+    local cache_file = "tests/.tmp_map_cache.json"
+    os.remove(cache_file)
+    local U = require("miuthought.util")
+
+    local reads1 = 0
+    local deps1 = make_deps({
+        map_cache_path = cache_file,
+        read_text = function(_, href)
+            reads1 = reads1 + 1
+            return href == "OEBPS/c1.xhtml" and CH1_TEXT or CH2_TEXT
+        end,
+    })
+    local report1, err1 = Sync.run(deps1)
+    T.ok(report1, "首次应成功: " .. tostring(err1))
+    T.ok(reads1 > 0, "首次读取了正文文件")
+    T.ok(U.file_exists(cache_file), "映射结果落盘")
+
+    -- 第二次:同一章节已在缓存里,不该再读任何正文文件
+    local reads2 = 0
+    local deps2 = make_deps({
+        map_cache_path = cache_file,
+        read_text = function(_, href)
+            reads2 = reads2 + 1
+            return href == "OEBPS/c1.xhtml" and CH1_TEXT or CH2_TEXT
+        end,
+    })
+    local report2, err2 = Sync.run(deps2)
+    T.ok(report2, "续批应成功: " .. tostring(err2))
+    T.eq(reads2, 0, "全部命中映射缓存,零文件读取")
+    T.eq(report2.injected, 1, "缓存映射照常注入")
+    T.eq(report2.chapters_matched, 1, "匹配章数一致")
+    os.remove(cache_file)
+end)
+
 T.case("分批预算:拉满即收工,缓存命中免费", function()
     local rows = {}
     for i = 1, 10 do rows[i] = {chapterUid = i, title = "第" .. i .. "章", chapterIdx = i} end

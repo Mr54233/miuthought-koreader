@@ -596,6 +596,7 @@ function Plugin:_sync_run(path,bound)
             read_text=function(m,href) return (EpubReader.read(m,href)) end,
             save_thoughts=function(book_id,uid,groups) return Thoughts.save(self.store,book_id,uid,groups) end,
             merge_thoughts=function(book_id,uid,from,into) return Thoughts.merge(self.store,book_id,uid,from,into) end,
+            map_cache_path=self.store:book_dir(bound.book_id).."/sync-cache/map.json",
             inject=function(src,book_id,mapped,dest)
                 return EpubInject.inject_copy(src,book_id,mapped,{dest=dest})
             end,
@@ -603,7 +604,11 @@ function Plugin:_sync_run(path,bound)
                 local msg
                 if phase=="chapters" then msg="正在获取章节列表…"
                 elseif phase=="fetch" then msg=string.format("正在拉取划线与想法 %d/%d\n%s\n(点按屏幕可取消)",i,n,tostring(text or ""))
-                elseif phase=="map" then msg="正在匹配本地章节…"
+                elseif phase=="map" then
+                    if n and n>0 and i and i>0 then
+                        msg=string.format("正在匹配本地章节 %d/%d 个正文文件",i,n)
+                        if n>200 then msg=msg.."\n大型书籍的文本匹配需要较长时间,请耐心等待" end
+                    else msg="正在匹配本地章节…" end
                 else msg="正在生成划线版并替换…\n(书较大时需要一点时间)" end
                 return Trapper:info(msg)
             end,

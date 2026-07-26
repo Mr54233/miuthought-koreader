@@ -572,6 +572,7 @@ function SyncTask:start(task, on_progress, on_done)
                     end})
                 end,
                 fetch_budget = mode ~= "reinject" and batch_limit or nil,
+                map_cache_path = cache_dir .. "/map.json",
                 progress = function(phase, i, n, text)
                     if cancelled() then return false end
                     local percent
@@ -579,7 +580,9 @@ function SyncTask:start(task, on_progress, on_done)
                     elseif phase == "fetch" then
                         fetch_now.i, fetch_now.n, fetch_now.title = i, n, tostring(text or "")
                         percent = 0.03 + (n > 0 and (i - 1) / n or 0) * 0.77
-                    elseif phase == "map" then percent = 0.84
+                    elseif phase == "map" then
+                        -- 映射按正文文件推进,占 0.84~0.90 这一段
+                        percent = 0.84 + (n and n > 0 and i and i > 0 and (i / n) * 0.06 or 0)
                     elseif phase == "inject" then percent = 0.90 end
                     emit{stage = phase, current = i, total = n, chapter = text, percent = percent}
                     return true

@@ -173,6 +173,9 @@ function SyncProgress:set_state(state)
     rows[#rows + 1] = labels[state.stage] or tostring(state.stage or "处理中")
     if total > 0 and state.stage == "fetch" then
         rows[#rows + 1] = "章节 " .. tostring(current) .. " / " .. tostring(total)
+    elseif total > 0 and state.stage == "map" then
+        rows[#rows + 1] = "正文文件 " .. tostring(current) .. " / " .. tostring(total)
+        if total > 200 then rows[#rows + 1] = "大型书籍的文本匹配需要较长时间,请耐心等待" end
     end
     if state.chapter and state.chapter ~= "" then rows[#rows + 1] = clean_status(state.chapter, 120) end
     if state.message and state.message ~= "" then rows[#rows + 1] = clean_status(state.message, 180) end

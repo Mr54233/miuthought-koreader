@@ -118,11 +118,12 @@ function ChapterMap.build(spine, read_text, chapters)
             logger.warn("[MiuThought][ChapterMap] 读取章节失败",
                 "href=", tostring(item.href), "err=", tostring(html))
         elseif text ~= "" then
-            local title_count = 0
-            for _, title in ipairs(all_titles) do
-                if text:find(title, 1, true) then title_count = title_count + 1 end
-            end
-            local is_toc = title_count >= toc_threshold
+            -- 目录页检测不再单独扫 all_titles(大书是 千标题×千文件 的天文数字):
+            -- 复用下面每章标题命中的结果,统计本文件命中了多少个「不同标题」,
+            -- 超过阈值判为目录页,整批命中作废。
+            local file_title_cis = {}
+            local distinct_titles = {}
+            local distinct_count = 0
             for ci in ipairs(chapters) do
                 local quotes = quotes_list[ci]
                 if #quotes > 0 then
@@ -135,7 +136,17 @@ function ChapterMap.build(spine, read_text, chapters)
                         scores[ci][#scores[ci] + 1] = {href = item.href, score = score}
                     end
                 end
-                if titles[ci] and not is_toc and text:find(titles[ci], 1, true) then
+                local title = titles[ci]
+                if title and text:find(title, 1, true) then
+                    file_title_cis[#file_title_cis + 1] = ci
+                    if not distinct_titles[title] then
+                        distinct_titles[title] = true
+                        distinct_count = distinct_count + 1
+                    end
+                end
+            end
+            if distinct_count < toc_threshold then
+                for _, ci in ipairs(file_title_cis) do
                     title_hits[ci] = title_hits[ci] or {}
                     title_hits[ci][#title_hits[ci] + 1] = item.href
                 end
