@@ -43,7 +43,9 @@ function Sync.run(deps)
             return deps.annotations:fetch_chapter(deps.book_id, ch.uid)
         end)
         if good and type(data) == "table" and data.underline_request_ok ~= false then
-            consecutive_hard = 0
+            -- 断点缓存命中(resumed)不算网络成功,不能复位熔断计数:
+            -- 离线续传时散布的缓存命中会把计数清零,让熔断永不触发。
+            if not data.resumed then consecutive_hard = 0 end
             if #(data.errors or {}) > 0 then partial_errors = partial_errors + 1 end
             total_underlines = total_underlines + (data.underline_count or 0)
             if (data.underline_count or 0) > 0 then
@@ -81,7 +83,13 @@ function Sync.run(deps)
     end
 
     if not step("map", 0, 1, "匹配本地章节") then return nil, "已取消" end
+    -- 每读一个 spine 文件发一次心跳(只作活动信号,不在文件中途响应取消),
+    -- 免得特大书的纯 CPU 匹配被看门狗当成死吊。
+    local map_count = 0
+    local spine_total = #(meta.spine or {})
     local mapped, unmatched = ChapterMap.build(meta.spine, function(href)
+        map_count = map_count + 1
+        step("map", map_count, spine_total, href)
         return deps.read_text(meta, href)
     end, fetched)
     if #mapped == 0 then

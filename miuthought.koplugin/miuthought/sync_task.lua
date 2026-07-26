@@ -36,6 +36,10 @@ local function serializable_copy(value, seen)
             if x ~= nil then out[k] = x end
         end
     end
+    -- 路径级防环:递归返回即解除标记。review_map 与 review_groups 共享同一张
+    -- texts 表(annotations.normalize_reviews 直接复用),永久标记会把第二次
+    -- 出现的共享表整个丢掉,断点缓存必然写坏。
+    seen[value] = nil
     return out
 end
 
@@ -56,6 +60,11 @@ end
 
 function SyncTask:set_backgrounded(value)
     self.backgrounded = value == true
+end
+
+function SyncTask:set_keep_awake(value)
+    self.keep_awake_enabled = value ~= false
+    if not self.keep_awake_enabled then self:_release_awake() end
 end
 
 function SyncTask:last_state()
@@ -88,6 +97,21 @@ local function process_exists(pid)
     local state=status:match("[\r\n]State:%s*([A-Z])") or status:match("^State:%s*([A-Z])")
     if state=="Z" or state=="X" then return false end
     return true
+end
+
+-- 可靠终止:FFIUtil.terminateSubProcess 对非亲子进程(重启后 attach 接管)是
+-- 静默空操作(waitpid ECHILD 被当作 done 跳过 kill)。杀完必须用 /proc 复核,
+-- 仍活着就对进程组直接 SIGKILL;返回「是否确认已死」,杀不死不许收尾。
+function SyncTask:_terminate(pid)
+    pcall(FFIUtil.terminateSubProcess, pid)
+    if process_exists(pid) ~= true then return true end
+    local ok, ffi = pcall(require, "ffi")
+    if ok and ffi then
+        pcall(ffi.cdef, "int kill(int pid, int sig);")
+        pcall(function() ffi.C.kill(-tonumber(pid), 9) end)
+        pcall(function() ffi.C.kill(tonumber(pid), 9) end)
+    end
+    return process_exists(pid) ~= true
 end
 
 function SyncTask:_claim(pid)
@@ -226,6 +250,16 @@ function SyncTask:_poll()
     if file_exists(job.result_path) then self:_finish(job); return end
 
     local now=os.time()
+    -- 挂起豁免:轮询间隔远超调度周期说明设备睡过一觉——挂起期间父子进程都被
+    -- 冻结,墙钟静默对子进程不公平;重置活动基线,给它完整的恢复窗口,
+    -- 否则唤醒后首轮 poll 会误杀健康的子进程。
+    if job.last_poll_at and now-job.last_poll_at>30 then
+        logger.info("[MiuThought][SyncTask] wakeup detected, resetting idle baseline",
+            "gap=",tostring(now-job.last_poll_at))
+        job.last_progress_at=now
+        job.waiting_notified=false
+    end
+    job.last_poll_at=now
     if not job.last_keepalive or now-job.last_keepalive>=5 then
         job.last_keepalive=now
         self:_reset_device_timeout()
@@ -243,8 +277,14 @@ function SyncTask:_poll()
     if alive==true or (alive==nil and done_ok and done==false) then
         job.dead_seen_at=nil
         if job.cancel_requested_at and now-job.cancel_requested_at>=8 then
-            pcall(FFIUtil.terminateSubProcess,job.pid)
-            self:_finish(job,"同步已取消")
+            if self:_terminate(job.pid) then
+                self:_finish(job,"同步已取消")
+            else
+                -- 杀不死(极端情况):保留 cancel 文件让子进程在下个边界自行退出,
+                -- 继续轮询,绝不在进程仍活着时谎报「已取消」并删信号文件。
+                logger.warn("[MiuThought][SyncTask] terminate unverified, keep polling","pid=",tostring(job.pid))
+                self:_schedule()
+            end
             return
         end
         local activity=tonumber(job.last_progress_at or job.started_at) or now
@@ -261,12 +301,18 @@ function SyncTask:_poll()
             self:_release_awake()
             logger.info("[MiuThought][SyncTask] standby lock released while waiting", "pid=", tostring(job.pid))
         end
-        -- 看门狗:子进程心跳很密(章节/想法批次/注入条目都会发),静默 6 分钟
-        -- 远超单次请求最坏重试周期,只能是 DNS 无超时之类的死吊——终止并保留断点,
-        -- 把「莫名其妙的卡死」变成有限失败 + 续传。
+        -- 看门狗:子进程心跳很密(章节/想法批次/注入条目都会发),清醒状态下
+        -- 静默 6 分钟远超单次请求最坏重试周期,只能是 DNS 无超时之类的死吊——
+        -- 终止并保留断点,把「莫名其妙的卡死」变成有限失败 + 续传。
+        -- (挂起时长已被上面的基线重置豁免,不会误杀刚唤醒的子进程。)
         if idle>=360 then
-            pcall(FFIUtil.terminateSubProcess,job.pid)
-            self:_finish(job,"同步长时间无响应,已中止;已拉取章节保存在断点缓存,再次同步会继续。")
+            if self:_terminate(job.pid) then
+                self:_finish(job,"同步长时间无响应,已中止;已拉取章节保存在断点缓存,再次同步会继续。")
+            else
+                logger.warn("[MiuThought][SyncTask] watchdog terminate unverified, keep polling","pid=",tostring(job.pid))
+                U.atomic_write(job.cancel_path,"1",true)
+                self:_schedule()
+            end
             return
         end
         self:_schedule()
@@ -306,6 +352,9 @@ function SyncTask:attach(descriptor,on_progress,on_done)
         self.job=nil
         return false,"后台同步任务身份不匹配"
     end
+    -- 接管宽限:进度文件的时间戳可能很陈旧(设备刚唤醒/KOReader 刚重启),
+    -- 以接管时刻为活动基线,别让看门狗上来就杀。
+    self.job.last_progress_at=os.time()
     local done_ok,done=pcall(FFIUtil.isSubProcessDone,pid,false)
     local alive=process_exists(pid)
     if not done_ok and alive==nil then
@@ -402,12 +451,22 @@ function SyncTask:start(task, on_progress, on_done)
             local function fetch_percent()
                 return 0.03 + (fetch_now.n > 0 and (fetch_now.i - 1) / fetch_now.n or 0) * 0.77
             end
+            -- 缓存体检:review_groups 每项必须带 texts 表(防旧版坏缓存),不合格当未命中重拉。
+            local function cache_valid(data)
+                if type(data) ~= "table" or type(data.underlines) ~= "table" then return false end
+                if type(data.review_groups) == "table" then
+                    for _, group in ipairs(data.review_groups) do
+                        if type(group) ~= "table" or type(group.texts) ~= "table" then return false end
+                    end
+                end
+                return true
+            end
             local cached_annotations = {
                 fetch_chapter = function(_, bid, uid)
                     local raw = UChild.read_file(cache_path(uid), true)
                     if raw then
                         local good, data = pcall(JsonChild.decode, raw)
-                        if good and type(data) == "table" and type(data.underlines) == "table" then
+                        if good and cache_valid(data) then
                             data.resumed = true
                             return data
                         end
@@ -439,6 +498,20 @@ function SyncTask:start(task, on_progress, on_done)
             }
 
             emit{stage = "prepare", current = 0, total = 1, chapter = doc_title}
+            -- 清扫上次被硬杀留下的副本 .tmp 残留(书目录里用户看得见)与缓存孤儿 tmp。
+            local dest_base = EpubInject.copy_path(doc_path)
+            local book_dir_path = dest_base:match("^(.*)/[^/]+$")
+            if book_dir_path then
+                for _, file in ipairs(UChild.list(book_dir_path)) do
+                    if file ~= dest_base and file:find(dest_base, 1, true) == 1
+                        and file:find(".tmp", #dest_base + 1, true) then
+                        os.remove(file)
+                    end
+                end
+            end
+            for _, file in ipairs(UChild.list(cache_dir)) do
+                if file:match("%.tmp%-%d+%-%d+$") then os.remove(file) end
+            end
             local meta, meta_err = EpubReader.load(doc_path)
             if not meta then error(meta_err or "无法读取本地书") end
             if meta.has[EpubInject.MARKER] then error("当前选择的是觅想版副本,请选择原书") end
@@ -488,6 +561,9 @@ function SyncTask:start(task, on_progress, on_done)
             LoggerChild.warn("[MiuThought][SyncTask] child failed", raw_error)
             local display_error = raw_error:match("^(.-)\nstack traceback:") or raw_error
             display_error = display_error:gsub("^.-%.lua:%d+:%s*", "")
+            if raw_error:lower():find("not enough memory", 1, true) then
+                display_error = "设备内存不足,同步未完成;原书与已有副本未受影响,已拉取章节保存在断点缓存。"
+            end
             local was_cancelled = cancelled() or display_error == "已取消"
             emit{stage = was_cancelled and "cancelled" or "error", message = display_error}
             payload = {ok = false, cancelled = was_cancelled or nil, error = display_error}

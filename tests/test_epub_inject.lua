@@ -73,8 +73,8 @@ T.case("端到端注入", function()
     T.eq(decoded.book_id, "b001", "marker 记录 book_id")
     T.eq(decoded.created, 1234567890, "marker 用注入的 now")
 
-    T.eq(w.opened_path, "/books/书.觅想.epub.tmp", "先写 tmp")
-    T.eq(renames[1][1], "/books/书.觅想.epub.tmp", "rename src")
+    T.eq(w.opened_path, "/books/书.觅想.epub.tmp-1234567890", "先写带时间戳的 tmp")
+    T.eq(renames[1][1], "/books/书.觅想.epub.tmp-1234567890", "rename src")
     T.eq(renames[1][2], "/books/书.觅想.epub", "rename dest")
 end)
 

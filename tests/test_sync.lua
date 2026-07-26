@@ -136,6 +136,32 @@ T.case("连续硬失败触发断网熔断", function()
     T.eq(calls.injected, nil, "熔断后不注入")
 end)
 
+T.case("断点缓存命中不复位熔断计数", function()
+    local rows = {}
+    for i = 1, 7 do rows[i] = {chapterUid = i, title = "第" .. i .. "章", chapterIdx = i} end
+    local fetch_calls = 0
+    local deps = make_deps({
+        api = {chapters = function() return {data = rows} end},
+        annotations = {
+            fetch_chapter = function(_, _, uid)
+                fetch_calls = fetch_calls + 1
+                local n = tonumber(uid)
+                if n % 2 == 0 then
+                    -- 偶数章:断点缓存命中(resumed),不发网络
+                    return {underlines = {{range = "0-7", markText = "春江潮水连海平"}},
+                        review_map = {}, review_groups = {}, resumed = true,
+                        underline_count = 1, thought_count = 0, thought_entry_count = 0, errors = {}}
+                end
+                error("network request failed")
+            end,
+        },
+    })
+    local report, err = Sync.run(deps)
+    T.ok(report == nil and tostring(err):find("连续", 1, true),
+        "缓存命中穿插的连续网络失败仍应熔断: " .. tostring(err))
+    T.eq(fetch_calls, 5, "第 5 章(第 3 次真实失败)后中止")
+end)
+
 T.case("末尾连续失败且成功章节无划线时报拉取失败而非无划线", function()
     local rows = {}
     for i = 1, 4 do rows[i] = {chapterUid = i, title = "第" .. i .. "章", chapterIdx = i} end

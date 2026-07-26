@@ -239,8 +239,11 @@ function Plugin:settings_menu()
             return self.store:preferences().sync_keep_awake~=false
         end,callback=function()
             local p=self.store:preferences()
-            p.sync_keep_awake=(p.sync_keep_awake~=false) and false or true
+            local enabled=not (p.sync_keep_awake~=false)
+            p.sync_keep_awake=enabled
             self.store:save_preferences(p)
+            -- 对进行中的任务即时生效,不必等下次同步。
+            if self.sync_task then self.sync_task:set_keep_awake(enabled) end
         end},
     }
 end
@@ -431,8 +434,17 @@ function Plugin:_finish_sync(runtime,result)
 end
 
 function Plugin:_recover_sync_state()
+    -- 插件实例随文档开关频繁重建:先 reload 拿磁盘上的最新状态,
+    -- 避免用 init 时的内存快照幽灵接管一个已经收尾的任务。
+    self.store:reload()
     local state=self.store:get("sync_runtime",{})
     if state.status~="active" or type(state.task)~="table" then return end
+    -- 描述符体检:进度与结果文件都没了说明任务早已收尾/被清理,直接清状态。
+    if not U.file_exists(tostring(state.task.progress_path or ""))
+        and not U.file_exists(tostring(state.task.result_path or "")) then
+        self:_clear_sync_state()
+        return
+    end
     local runtime={doc_path=state.doc_path,book_id=state.book_id,title=state.title,
         started_at=state.started_at,task=state.task,dialog=nil,background=true}
     self._sync_runtime=runtime

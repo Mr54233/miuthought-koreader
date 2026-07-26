@@ -202,8 +202,10 @@ function M.inject_copy(src, book_id, chapters, opts)
     if not mod then return nil, arc_err end
 
     local dest = opts.dest or M.copy_path(src)
-    local tmp = dest .. ".tmp"
     local mtime = now()
+    -- tmp 带时间戳:两个 worker 罕见并发时(重启接管失控 + 重新同步)
+    -- 不会互相截断同一个临时文件。
+    local tmp = dest .. ".tmp-" .. tostring(mtime)
     local writer = mod.Writer:new{}
     if not writer:open(tmp, "epub") then
         return nil, "无法创建副本:" .. tostring(writer.err or tmp)
