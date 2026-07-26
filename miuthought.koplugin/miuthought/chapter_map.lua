@@ -8,7 +8,18 @@ local ChapterMap = {}
 -- 匹配算法版本:任何影响匹配结果的改动(引文窗口、投票规则、目录页判定、
 -- 归一化规则)都必须 +1。映射缓存把它写进指纹,算法一改缓存整体作废——
 -- 否则旧算法缓存下来的「匹配失败」会永久生效,改进永远轮不到那些章节。
-ChapterMap.ALGO_VERSION = 5
+ChapterMap.ALGO_VERSION = 6
+
+-- 标题钥匙:剥掉「第X章/节/回…」编号前缀。微信与本地书的章号体系
+-- 经常不一致(实测:微信「第六章 姑娘请自重」= 本地「第二百八十四章
+-- 姑娘请自重」),整标题匹配必死;章名本体才是稳定标识。
+-- 剥完不足 6 字节(如「上」「下」)退回全标题。
+function ChapterMap.title_key(title)
+    local t = ChapterMap.normalize(title)
+    local stripped = t:gsub("^第[%d零一二三四五六七八九十百千两]+[章节回卷部集篇]", "")
+    if #stripped >= 6 then return stripped end
+    return t
+end
 
 local ENTITIES = {
     amp = "&", lt = "<", gt = ">", quot = '"', apos = "'",
@@ -107,7 +118,7 @@ function ChapterMap.build(spine, read_text, chapters)
     local all_titles, seen_titles = {}, {}
     for ci, ch in ipairs(chapters) do
         quotes_list[ci] = #(ch.underlines or {}) > 0 and ChapterMap.quotes_of(ch.underlines) or {}
-        local title = ChapterMap.normalize(ch.title)
+        local title = ChapterMap.title_key(ch.title)
         titles[ci] = #title >= 6 and title or nil
         if titles[ci] and not seen_titles[title] then
             seen_titles[title] = true

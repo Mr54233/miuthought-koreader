@@ -92,6 +92,25 @@ T.case("拆分章:一微信章注入多本地文件(quote_only)", function()
     T.ok(mapped[1].quote_only and mapped[2].quote_only, "拆分章一律 quote_only")
 end)
 
+T.case("章号体系不一致时按章名本体兜底", function()
+    -- 微信「第六章 姑娘请自重」 vs 本地「第二百八十四章 姑娘请自重」
+    local files = {
+        ["c294.xhtml"] = "<html><head><title>第二百八十四章 姑娘请自重</title></head><body><h2>第二百八十四章 姑娘请自重</h2><p>正文内容。</p></body></html>",
+        ["c295.xhtml"] = "<html><body><h2>第二百八十五章 别的章</h2><p>别的内容。</p></body></html>",
+    }
+    local spine = {{href = "c294.xhtml"}, {href = "c295.xhtml"}}
+    local chapters = {{
+        uid = "1077", title = "第六章 姑娘请自重",
+        underlines = {{range = "0-1", markText = "精校后不存在的引文内容一"},
+                      {range = "1-2", markText = "精校后不存在的引文内容二"}},
+    }}
+    local mapped, unmatched = ChapterMap.build(spine, function(h) return files[h] end, chapters)
+    T.eq(#mapped, 1, "剥编号后章名命中: unmatched=" .. tostring(#unmatched))
+    T.eq(mapped[1].href, "c294.xhtml", "跨编号体系救回正确章节")
+    T.eq(ChapterMap.title_key("第六章 姑娘请自重"), "姑娘请自重", "title_key 剥前缀")
+    T.eq(ChapterMap.title_key("第三章 上"), "第三章上", "剥完过短退回全标题")
+end)
+
 T.case("标题多命中(≤3)救援为多目标 quote_only", function()
     local files = {
         ["v.xhtml"] = "<html><body><h1>第一卷 引用了 第一章 惊蛰 的卷首</h1><p>卷首语。</p></body></html>",
