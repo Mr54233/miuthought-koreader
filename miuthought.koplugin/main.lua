@@ -144,11 +144,17 @@ function Plugin:pick_book(title,on_pick)
         select_file=true,
         file_filter=function(filename) return tostring(filename):lower():match("%.epub$")~=nil end,
         onConfirm=function(path)
-            if tostring(path):lower():find(".觅想.epub",1,true) then
-                self:info("这是觅想版副本,请选择原书")
-                return
-            end
-            on_pick(path)
+            -- PathChooser 的 Choose 回调是先跑 onConfirm、再连关确认框和全屏
+            -- 选择器;这里同步弹出的任何窗口都会被随后的关闭/重绘顶掉
+            -- (实测:进度框一闪就没,任务却还在跑)。推迟到下一轮事件循环,
+            -- 等选择器完全退场再执行后续流程。
+            UIManager:nextTick(function()
+                if tostring(path):lower():find(".觅想.epub",1,true) then
+                    self:info("这是觅想版副本,请选择原书")
+                    return
+                end
+                on_pick(path)
+            end)
         end,
     }
     UIManager:show(chooser)
@@ -413,7 +419,9 @@ function Plugin:_start_sync_task(path,bound,mode,opts)
         runtime.background=true
         self.sync_task:set_backgrounded(true)
     else
-        self:_show_active_sync_dialog()
+        -- 阅读器菜单(TouchMenu)同样是「先跑回调再关菜单」:
+        -- 推迟一拍再弹进度框,免得被菜单关闭的重绘顶掉。
+        UIManager:nextTick(function() self:_show_active_sync_dialog() end)
     end
 end
 
