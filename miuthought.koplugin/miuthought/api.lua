@@ -125,7 +125,31 @@ function Api:search(q, offset, count)
     return self:call("/store/search", {keyword=tostring(q or ""), scope=10, maxIdx=offset or 0, count=count or 30}, {retries=1, timeout={10, 18}})
 end
 function Api:book(id) return self:call("/book/info", {bookId=tostring(id)}) end
-function Api:chapters(id) return self:call("/book/chapterinfo", {bookId=tostring(id)}) end
+
+-- 章节列表走原版实测过的 web 端点(Cookie 鉴权,响应为书记录嵌套形状
+-- {data=[{bookId, updated=[...]}]});网关的 /book/chapterinfo 无历史消费者,
+-- 真机返回 HTTP 403,仅保留为兜底。
+function Api:web_chapters(id)
+    id = tostring(id or "")
+    if id == "" then error("invalid book id") end
+    return self.http:post_json("https://weread.qq.com/web/book/chapterInfos", {bookIds={id}}, {
+        retries = 3,
+        headers = {
+            Origin = "https://weread.qq.com",
+            Referer = Protocol.reader_url(id),
+        },
+    })
+end
+
+function Api:chapters(id)
+    local ok, data = pcall(function() return self:web_chapters(id) end)
+    if ok then return data end
+    local fallback_ok, fallback = pcall(function()
+        return self:call("/book/chapterinfo", {bookId=tostring(id)})
+    end)
+    if fallback_ok then return fallback end
+    error(data)
+end
 function Api:progress(id) return self:call("/book/getprogress", {bookId=tostring(id), _t=os.time()}) end
 function Api:web_progress(id)
     id=tostring(id or "")
