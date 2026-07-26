@@ -482,7 +482,9 @@ end
 
 local function intervals(data, visible_count, index)
     local out = {}
-    local stats = {quote_aligned=0, numeric=0, dropped=0}
+    -- dropped 是总数;overlapped(与更前划线重叠被去重)与 unlocated
+    -- (本地正文找不到落点)分开计数,报告端才能把语义讲清楚。
+    local stats = {quote_aligned=0, numeric=0, dropped=0, overlapped=0, unlocated=0}
     for _, row in ipairs(data.underlines or {}) do
         local raw_a, raw_b = parse_range(range_key(row))
         if raw_a then
@@ -506,9 +508,11 @@ local function intervals(data, visible_count, index)
                 }
             else
                 stats.dropped = stats.dropped + 1
+                stats.unlocated = stats.unlocated + 1
             end
         else
             stats.dropped = stats.dropped + 1
+            stats.unlocated = stats.unlocated + 1
         end
     end
     table.sort(out, function(x,y) if x.a==y.a then return x.b<y.b end return x.a<y.a end)
@@ -517,8 +521,9 @@ local function intervals(data, visible_count, index)
         if it.a >= cursor then
             clean[#clean + 1] = it; cursor = it.b
         else
-            -- 与前一条划线交叠而被丢弃:计入 dropped,让同步报告如实反映。
+            -- 与前一条划线交叠而被去重:热门划线大量互相重叠,这是常态而非失败。
             stats.dropped = stats.dropped + 1
+            stats.overlapped = stats.overlapped + 1
         end
     end
     return clean, stats
@@ -588,7 +593,10 @@ function Annotations:apply(html, data)
         underlines=data.underline_count, thoughts=data.thought_count,
         thought_entries=data.thought_entry_count or 0, errors=#(data.errors or {}),
         quote_aligned=alignment and alignment.quote_aligned or 0,
+        numeric=alignment and alignment.numeric or 0,
         dropped=alignment and alignment.dropped or 0,
+        overlapped=alignment and alignment.overlapped or 0,
+        unlocated=alignment and alignment.unlocated or 0,
     }
 end
 

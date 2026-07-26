@@ -153,7 +153,8 @@ function M.inject_copy(src, book_id, chapters, opts)
 
     -- 先算好每章的注入结果,全部成功后才写包。
     local targets, stats = {}, {
-        injected = 0, marks = 0, unmatched = {}, quote_aligned = 0, dropped = 0,
+        injected = 0, marks = 0, unmatched = {},
+        quote_aligned = 0, numeric = 0, dropped = 0, overlapped = 0, unlocated = 0,
     }
     local marker_chapters = {}
     local total_underlines = 0
@@ -178,17 +179,18 @@ function M.inject_copy(src, book_id, chapters, opts)
             if overlay then data.no_numeric_fallback = true end
             local rendered, _, ch_stats = Annotations:new(nil):apply(base, data)
             local mark_count = count_marks(rendered, data.underlines, base)
+            stats.quote_aligned = stats.quote_aligned + (ch_stats.quote_aligned or 0)
+            stats.numeric = stats.numeric + (ch_stats.numeric or 0)
+            stats.dropped = stats.dropped + (ch_stats.dropped or 0)
+            stats.overlapped = stats.overlapped + (ch_stats.overlapped or 0)
+            stats.unlocated = stats.unlocated + (ch_stats.unlocated or 0)
             if mark_count > 0 then
                 targets[entry_path] = ensure_style(rendered)
                 stats.injected = stats.injected + 1
                 stats.marks = stats.marks + mark_count
-                stats.quote_aligned = stats.quote_aligned + (ch_stats.quote_aligned or 0)
-                stats.dropped = stats.dropped + (ch_stats.dropped or 0)
                 marker_chapters[#marker_chapters + 1] = {
                     uid = data.chapter_uid, href = entry_path, marks = mark_count,
                 }
-            else
-                stats.dropped = stats.dropped + (ch_stats.dropped or 0)
             end
         end
     end

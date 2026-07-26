@@ -159,6 +159,8 @@ T.case("重叠划线只计实际锚点数", function()
     T.ok(stats, "应成功: " .. tostring(err))
     T.eq(stats.marks, 1, "重叠划线去重后 marks 记实际注入数")
     T.eq(stats.dropped, 1, "被去重叠丢弃的划线计入 dropped")
+    T.eq(stats.overlapped, 1, "分项:重叠去重")
+    T.eq(stats.unlocated, 0, "分项:未定位为零")
 end)
 
 T.case("后缀歧义进 unmatched,同一文件多章叠加注入", function()
@@ -234,6 +236,7 @@ T.case("叠加章节引文不中时丢弃,不做数字兜底", function()
         if e.path == "OEBPS/Text/ch1.xhtml" then ch1 = e end
     end
     T.ok(not ch1.content:find('data-miu-range="0-4"', 1, true), "不得用数字偏移把 43 章划线画进 42 章正文")
+    T.eq(stats.unlocated, 1, "分项:引文不中的叠加划线计入未定位")
 end)
 
 T.case("叠加章节同 range 键按出现次数差计数", function()

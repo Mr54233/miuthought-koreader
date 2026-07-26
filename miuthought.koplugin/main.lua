@@ -518,13 +518,17 @@ function Plugin:_sync_run(path,bound)
 end
 
 function Plugin:_sync_report(report)
+    local located=(report.quote_aligned or 0)+(report.numeric or 0)
     local lines={
         "同步完成",
         "",
         string.format("章节:%d/%d 有划线,注入 %d 章",
             report.chapters_with_data,report.chapters_total,report.injected),
-        string.format("锚点:%d 处(引文对齐 %d,跳过 %d——重叠去重/未定位)",
-            report.marks or 0,report.quote_aligned or 0,report.dropped or 0),
+        string.format("书中注入锚点:%d 处",report.marks or 0),
+        string.format("· 定位成功 %d 条(原文对齐 %d,按偏移估算 %d)",
+            located,report.quote_aligned or 0,report.numeric or 0),
+        string.format("· 多人划同一段,重叠只保留 1 条:合并 %d 条",report.overlapped or 0),
+        string.format("· 本地正文找不到对应文字:放弃 %d 条",report.unlocated or 0),
         string.format("想法缓存:%d 章",report.thoughts_saved or 0),
     }
     local misses={}
