@@ -398,6 +398,8 @@ function SyncTask:start(task, on_progress, on_done)
     -- mode: "sync"=全新拉取(完成过的旧缓存先清);"reinject"=纯离线,
     -- 只用上次拉取的数据重跑映射+注入,零网络。
     local mode = tostring(task.mode or "sync")
+    -- 分批风控:每次同步最多拉这么多个新章节,大书分多次完成。
+    local batch_limit = tonumber(self.store:preferences().sync_batch_limit) or 300
     self.keep_awake_enabled = self.store:preferences().sync_keep_awake ~= false
 
     local child = function()
@@ -501,12 +503,13 @@ function SyncTask:start(task, on_progress, on_done)
                         end
                     end
                     if mode == "reinject" then
-                        -- 离线重注绝不碰网络:完成过的缓存应覆盖全部章节,缺=异常。
+                        -- 离线重注绝不碰网络。分批场景下缓存本来就可能只覆盖前若干批,
+                        -- 缺章按"无数据"处理(resumed 免得占预算/动熔断),照常注入已有部分。
                         return {
                             book_id = tostring(bid), chapter_uid = tostring(uid),
                             underlines = {}, review_map = {}, review_groups = {},
                             underline_count = 0, thought_count = 0, thought_entry_count = 0,
-                            errors = {"离线重注:缓存缺少该章"}, underline_request_ok = false,
+                            errors = {}, underline_request_ok = true, resumed = true,
                         }
                     end
                     local data = fetcher:fetch_chapter(bid, uid, function(stage2, i2, n2, extra)
@@ -531,6 +534,8 @@ function SyncTask:start(task, on_progress, on_done)
                         local enc_ok, encoded = pcall(JsonChild.encode, slim)
                         if enc_ok then UChild.atomic_write(cache_path(uid), encoded, true) end
                     end
+                    -- 礼貌间隔:章与章之间随机停 200~400ms,请求速率贴近真人翻章。
+                    FFIUtil.usleep((200 + math.random(0, 200)) * 1000)
                     return data
                 end,
             }
@@ -566,6 +571,7 @@ function SyncTask:start(task, on_progress, on_done)
                         heartbeat("inject", tostring(name or ""), 0.90)
                     end})
                 end,
+                fetch_budget = mode ~= "reinject" and batch_limit or nil,
                 progress = function(phase, i, n, text)
                     if cancelled() then return false end
                     local percent
@@ -580,9 +586,17 @@ function SyncTask:start(task, on_progress, on_done)
                 end,
             }
             if not report then error(sync_err or "同步失败") end
-            -- 成功:保留缓存供「离线重新注入」,打上完成标记;
-            -- 下次全新同步看到标记会先清空重拉。取消/失败不打标记=续传。
-            UChild.atomic_write(completed_marker, tostring(os.time()), true)
+            -- 状态落盘:阅读端据此做「继续拉取」菜单与自动分批触发。
+            local pending = tonumber(report.chapters_pending) or 0
+            local state_ok, state_json = pcall(JsonChild.encode, {
+                total = report.chapters_total, pending = pending, updated_at = os.time(),
+            })
+            if state_ok then UChild.atomic_write(cache_dir .. "/state.json", state_json, true) end
+            -- 全部章节拉完才算「完成」:打标记保留缓存供离线重注,
+            -- 下次全新同步看到标记会清空重拉;分批未完/取消/失败不打标记=续传。
+            if pending == 0 and mode ~= "reinject" then
+                UChild.atomic_write(completed_marker, tostring(os.time()), true)
+            end
             return {report = report, auth = store:auth()}
         end, debug.traceback)
 

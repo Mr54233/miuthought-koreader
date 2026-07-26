@@ -109,6 +109,14 @@ function Plugin:reader_menu()
     items[#items+1]={text="绑定微信读书",callback=self:safe("bind",function() self:bind_book() end)}
     items[#items+1]={text="同步划线与想法",callback=self:safe("sync_thoughts",function() self:sync_thoughts() end)}
     local doc_path=self:current_doc_path()
+    local doc_bound=doc_path and Binding.get(self.store,doc_path)
+    if doc_bound then
+        local state=self:_sync_state(doc_bound.book_id)
+        if state and (tonumber(state.pending) or 0)>0 then
+            items[#items+1]={text=string.format("继续拉取后续章节(还剩 %d 章)",state.pending),
+                callback=self:safe("continue_sync",function() self:sync_entry(doc_path,"sync") end)}
+        end
+    end
     if doc_path and self:_has_reinject_cache(doc_path) then
         items[#items+1]={text="重新注入(用上次数据,离线)",callback=self:safe("reinject",function() self:sync_entry(doc_path,"reinject") end)}
     end
@@ -242,6 +250,13 @@ end
 function Plugin:settings_menu()
     return {
         {text="想法弹窗字体",sub_item_table_func=function() return self:thought_font_menu() end},
+        {text="阅读时自动分批拉取后续章节",checked_func=function()
+            return self.store:preferences().auto_batch_sync~=false
+        end,callback=function()
+            local p=self.store:preferences()
+            p.auto_batch_sync=not (p.auto_batch_sync~=false)
+            self.store:save_preferences(p)
+        end},
         {text="同步时保持唤醒(防锁屏中断)",checked_func=function()
             return self.store:preferences().sync_keep_awake~=false
         end,callback=function()
@@ -312,8 +327,9 @@ function Plugin:sync_thoughts()
 end
 
 -- 统一同步入口:阅读器与文件管理器共用,path 为原书路径。
--- mode="sync"(默认,全新拉取)| "reinject"(离线,用上次数据重注)。
-function Plugin:sync_entry(path,mode)
+-- mode="sync"(默认,全新拉取/续批)| "reinject"(离线,用上次数据重注)。
+-- opts.background=true 时静默后台启动(自动分批用),opts.silent 抑制报错弹窗。
+function Plugin:sync_entry(path,mode,opts)
     mode=mode or "sync"
     if self.sync_task and self.sync_task:busy() then self:_show_active_sync_dialog() return end
     if not tostring(path or ""):lower():match("%.epub$") then self:info("只支持 EPUB 格式的本地书") return end
@@ -334,7 +350,7 @@ function Plugin:sync_entry(path,mode)
         return
     end
     if self.sync_task and self.sync_task:available() then
-        self:_start_sync_task(path,bound,mode)
+        self:_start_sync_task(path,bound,mode,opts)
     elseif mode=="reinject" then
         self:info("此设备不支持离线重注(缺少子进程支持),请直接同步")
     else
@@ -347,7 +363,23 @@ end
 function Plugin:_has_reinject_cache(path)
     local bound=path and Binding.get(self.store,path)
     if not bound then return false end
-    return U.file_exists(self.store:book_cache_path(bound.book_id).."/sync-cache/.completed")
+    -- 有 chapters.json 就说明至少完成过一批,离线重注即可用(分批未完也算)。
+    return U.file_exists(self.store:book_cache_path(bound.book_id).."/sync-cache/chapters.json")
+end
+
+-- 读同步进度状态(child 写的 state.json);60s 内存缓存,翻页检查零成本。
+function Plugin:_sync_state(book_id)
+    local now=os.time()
+    local cached=self._sync_state_cache
+    if cached and cached.book_id==tostring(book_id) and now-cached.at<60 then return cached.state end
+    local raw=U.read_file(self.store:book_cache_path(book_id).."/sync-cache/state.json",true)
+    local state=nil
+    if raw then
+        local ok,decoded=pcall(function() return require("miuthought.json").decode(raw) end)
+        if ok and type(decoded)=="table" then state=decoded end
+    end
+    self._sync_state_cache={book_id=tostring(book_id),at=now,state=state}
+    return state
 end
 
 -- ===== 后台同步任务运行时 =====
@@ -360,18 +392,29 @@ end
 
 function Plugin:_clear_sync_state() self.store:set("sync_runtime",{}) end
 
-function Plugin:_start_sync_task(path,bound,mode)
+function Plugin:_start_sync_task(path,bound,mode,opts)
+    opts=opts or {}
     local title=U.trim(tostring(bound.title or ""))
     if title=="" then title=self:doc_title_guess(path) end
     local runtime={doc_path=path,book_id=bound.book_id,title=title,started_at=os.time(),dialog=nil,background=false}
     local ok,err=self.sync_task:start({doc_path=path,book_id=bound.book_id,title=title,mode=mode},
         function(state) self:_on_sync_progress(runtime,state) end,
         function(result) self:_finish_sync(runtime,result) end)
-    if not ok then self:info("无法启动后台同步:\n"..tostring(err)) return end
+    if not ok then
+        if opts.silent then logger.warn("[MiuThought][Sync] auto batch start failed",tostring(err))
+        else self:info("无法启动后台同步:\n"..tostring(err)) end
+        return
+    end
     runtime.task=self.sync_task:descriptor()
     self._sync_runtime=runtime
     self:_persist_sync_state(runtime)
-    self:_show_active_sync_dialog()
+    if opts.background then
+        -- 自动分批:不打断阅读,直接后台跑,完成后照常弹结果。
+        runtime.background=true
+        self.sync_task:set_backgrounded(true)
+    else
+        self:_show_active_sync_dialog()
+    end
 end
 
 function Plugin:_on_sync_progress(runtime,state)
@@ -417,6 +460,39 @@ function Plugin:_show_active_sync_dialog()
     if runtime.last_state then dialog:set_state(runtime.last_state) end
 end
 
+-- ===== 自动分批:阅读接近已同步章节末尾时,后台拉下一批 =====
+function Plugin:_maybe_auto_batch(page)
+    local now=os.time()
+    if self._auto_batch_checked_at and now-self._auto_batch_checked_at<30 then return end
+    self._auto_batch_checked_at=now
+    if self._auto_batch_started then return end
+    if self.store:preferences().auto_batch_sync==false then return end
+    if not (self.sync_task and self.sync_task:available()) or self.sync_task:busy() then return end
+    local path=self:current_doc_path()
+    if not path or not tostring(path):lower():match("%.epub$") then return end
+    local bound=Binding.get(self.store,path)
+    if not bound then return end
+    local state=self:_sync_state(bound.book_id)
+    if not state or (tonumber(state.pending) or 0)<=0 then return end
+    local doc=self.ui and self.ui.document
+    if not doc then return end
+    local ok_pages,total_pages=pcall(function() return doc:getPageCount() end)
+    if not ok_pages or not tonumber(total_pages) or total_pages<=0 then return end
+    local percent=(tonumber(page) or 0)/total_pages
+    local total=math.max(1,tonumber(state.total) or 1)
+    local fetched_fraction=(total-(tonumber(state.pending) or 0))/total
+    -- 章节按书序分批,读进已同步范围的最后 5% 即触发下一批。
+    if percent < fetched_fraction-0.05 then return end
+    if not self:logged_in() or not self:is_online() then return end
+    self._auto_batch_started=true
+    self:toast("接近已同步章节末尾,后台拉取下一批…",3)
+    self:_start_sync_task(path,bound,"sync",{background=true,silent=true})
+end
+
+function Plugin:onPageUpdate(page)
+    pcall(function() self:_maybe_auto_batch(page) end)
+end
+
 function Plugin:_merge_sync_auth(result)
     if type(result.auth)~="table" then return end
     -- 子进程用隔离设置副本,期间刷新的 cookie 要合并回主设置。
@@ -435,6 +511,9 @@ function Plugin:_finish_sync(runtime,result)
     self.sync_task:set_backgrounded(false)
     self._sync_runtime=nil
     self:_clear_sync_state()
+    -- 同步进度状态已变化:失效内存缓存,自动分批允许下一轮触发。
+    self._sync_state_cache=nil
+    self._auto_batch_started=nil
     result=result or {}
     self:_merge_sync_auth(result)
     if result.ok==true and type(result.report)=="table" then
@@ -543,6 +622,10 @@ function Plugin:_sync_report(report)
             report.marks or 0,report.injected or 0,report.overlapped or 0),
         string.format("未注入:%d 条(本地正文对不上)",report.unlocated or 0),
     }
+    if (report.chapters_pending or 0)>0 then
+        lines[#lines+1]=string.format("分批:还剩 %d 章未拉取;菜单「继续拉取后续章节」手动拉,或继续阅读时自动补",
+            report.chapters_pending)
+    end
     if #(report.unmatched or {})>0 then
         lines[#lines+1]=string.format("有 %d 章没对上本地书(损失 %d 条)",
             #report.unmatched,report.unmatched_underlines or 0)

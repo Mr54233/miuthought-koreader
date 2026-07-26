@@ -57,6 +57,12 @@ function Sync.run(deps)
     local fetched = {}
     local total_underlines = 0
     local total_thought_entries = 0
+    -- 分批风控:每次同步最多向网络拉 fetch_budget 个新章节(缓存命中免费),
+    -- 到量干净收工,剩余章节记入 chapters_pending,下次同步自动续。
+    local fetch_budget = tonumber(deps.fetch_budget)
+    if fetch_budget and fetch_budget <= 0 then fetch_budget = nil end
+    local fresh_fetches = 0
+    local chapters_pending = 0
     -- 硬失败=整章划线都没拉到(决定是否中止);部分失败=划线在手、想法批次有缺(只计报告)。
     local hard_failures, partial_errors = 0, 0
     local thoughts_saved, save_failures = 0, 0
@@ -69,10 +75,18 @@ function Sync.run(deps)
         return text
     end
     for i, ch in ipairs(chapter_list) do
+        if fetch_budget and fresh_fetches >= fetch_budget then
+            chapters_pending = #chapter_list - i + 1
+            break
+        end
         if not step("fetch", i, #chapter_list, ch.title) then return nil, "已取消" end
         local good, data = pcall(function()
             return deps.annotations:fetch_chapter(deps.book_id, ch.uid)
         end)
+        -- 预算按"网络请求次数"计:缓存命中(resumed)免费,失败的尝试也占额度。
+        if not (good and type(data) == "table" and data.resumed) then
+            fresh_fetches = fresh_fetches + 1
+        end
         if good and type(data) == "table" and data.underline_request_ok ~= false then
             -- 断点缓存命中(resumed)不算网络成功,不能复位熔断计数:
             -- 离线续传时散布的缓存命中会把计数清零,让熔断永不触发。
@@ -118,6 +132,10 @@ function Sync.run(deps)
         if hard_failures > 0 then
             return nil, string.format("有 %d 章拉取失败,已成功的章节没有划线。\n最后错误:%s",
                 hard_failures, short_err(last_error))
+        end
+        if chapters_pending > 0 then
+            return nil, string.format("本批 %d 章都没有划线;还剩 %d 章,再次同步继续拉取",
+                #chapter_list - chapters_pending, chapters_pending)
         end
         return nil, "这本书在微信读书里没有划线"
     end
@@ -192,6 +210,7 @@ function Sync.run(deps)
         chapters_total = #chapter_list,
         chapters_with_data = #fetched,
         chapters_matched = #mapped,
+        chapters_pending = chapters_pending,
         total_underlines = total_underlines,
         total_thought_entries = total_thought_entries,
         unmatched = unmatched,

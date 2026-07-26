@@ -89,83 +89,80 @@ function ChapterMap.quotes_of(underlines, limit)
     return out
 end
 
+-- 单文件流式:内存里同一时刻只保留一个正文文件的文本(百兆大书在
+-- 256MB 的老设备上不能把全书文本都攥在手里),对它一次性统计所有章节的
+-- 引文命中与标题命中,然后立刻释放。
 function ChapterMap.build(spine, read_text, chapters)
-    local cache = {}
-    local function text_of(href)
-        if cache[href] == nil then
-            local ok, html = pcall(read_text, href)
-            if ok and html then
-                cache[href] = ChapterMap.normalize(html)
-            else
-                logger.warn("[MiuThought][ChapterMap] 读取章节失败",
-                    "href=", tostring(href), "err=", tostring(html))
-                cache[href] = false
-            end
-        end
-        return cache[href] or nil
-    end
-
-    -- 全部章节标题(规范化、去重)用于识别目录页:一个文件若包含大半章节标题,
-    -- 它是目录/导航页,标题兜底绝不能落在上面。
-    local all_titles = {}
-    do
-        local seen = {}
-        for _, ch in ipairs(chapters or {}) do
-            local title = ChapterMap.normalize(ch.title)
-            if #title >= 6 and not seen[title] then
-                seen[title] = true
-                all_titles[#all_titles + 1] = title
-            end
+    chapters = chapters or {}
+    -- 预计算每章引文与规范化标题;全部标题用于识别目录页
+    -- (一个文件若包含大半章节标题,它是目录/导航页,标题兜底绝不能落在上面)。
+    local quotes_list, titles = {}, {}
+    local all_titles, seen_titles = {}, {}
+    for ci, ch in ipairs(chapters) do
+        quotes_list[ci] = #(ch.underlines or {}) > 0 and ChapterMap.quotes_of(ch.underlines) or {}
+        local title = ChapterMap.normalize(ch.title)
+        titles[ci] = #title >= 6 and title or nil
+        if titles[ci] and not seen_titles[title] then
+            seen_titles[title] = true
+            all_titles[#all_titles + 1] = title
         end
     end
     local toc_threshold = math.max(2, math.ceil(#all_titles * 0.5))
-    local function is_toc_like(text)
-        local count = 0
-        for _, title in ipairs(all_titles) do
-            if text:find(title, 1, true) then
-                count = count + 1
-                if count >= toc_threshold then return true end
-            end
-        end
-        return false
-    end
 
-    local mapped, unmatched = {}, {}
-    for _, ch in ipairs(chapters or {}) do
-        local underlines = ch.underlines or {}
-        if #underlines == 0 then
-            unmatched[#unmatched + 1] = {uid = tostring(ch.uid or ""), title = ch.title, reason = "no_data"}
-        else
-            local quotes = ChapterMap.quotes_of(underlines)
-            local best_href, best_score, tied = nil, 0, false
-            for _, item in ipairs(spine or {}) do
-                local text = text_of(item.href)
-                if text and text ~= "" then
+    local scores = {}       -- [ci] = {{href, score}, ...}(spine 顺序)
+    local title_hits = {}   -- [ci] = {href, ...}(已排除目录页)
+    for _, item in ipairs(spine or {}) do
+        local ok, html = pcall(read_text, item.href)
+        local text = (ok and html) and ChapterMap.normalize(html) or nil
+        if not text then
+            logger.warn("[MiuThought][ChapterMap] 读取章节失败",
+                "href=", tostring(item.href), "err=", tostring(html))
+        elseif text ~= "" then
+            local title_count = 0
+            for _, title in ipairs(all_titles) do
+                if text:find(title, 1, true) then title_count = title_count + 1 end
+            end
+            local is_toc = title_count >= toc_threshold
+            for ci in ipairs(chapters) do
+                local quotes = quotes_list[ci]
+                if #quotes > 0 then
                     local score = 0
                     for _, quote in ipairs(quotes) do
                         if text:find(quote, 1, true) then score = score + 1 end
                     end
-                    if score > best_score then
-                        best_href, best_score, tied = item.href, score, false
-                    elseif score == best_score and score > 0 and item.href ~= best_href then
-                        tied = true
+                    if score > 0 then
+                        scores[ci] = scores[ci] or {}
+                        scores[ci][#scores[ci] + 1] = {href = item.href, score = score}
                     end
+                end
+                if titles[ci] and not is_toc and text:find(titles[ci], 1, true) then
+                    title_hits[ci] = title_hits[ci] or {}
+                    title_hits[ci][#title_hits[ci] + 1] = item.href
+                end
+            end
+        end
+        text = nil
+        collectgarbage("step", 400)
+    end
+
+    local mapped, unmatched = {}, {}
+    for ci, ch in ipairs(chapters) do
+        local underlines = ch.underlines or {}
+        if #underlines == 0 then
+            unmatched[#unmatched + 1] = {uid = tostring(ch.uid or ""), title = ch.title, reason = "no_data"}
+        else
+            local best_href, best_score, tied = nil, 0, false
+            for _, entry in ipairs(scores[ci] or {}) do
+                if entry.score > best_score then
+                    best_href, best_score, tied = entry.href, entry.score, false
+                elseif entry.score == best_score and entry.score > 0 and entry.href ~= best_href then
+                    tied = true
                 end
             end
             if tied then best_href = nil end
             if not best_href then
-                local title = ChapterMap.normalize(ch.title)
-                if #title >= 6 then
-                    local hits = {}
-                    for _, item in ipairs(spine or {}) do
-                        local text = text_of(item.href)
-                        if text and text:find(title, 1, true) and not is_toc_like(text) then
-                            hits[#hits + 1] = item.href
-                            if #hits > 1 then break end
-                        end
-                    end
-                    if #hits == 1 then best_href = hits[1] end
-                end
+                local hits = title_hits[ci] or {}
+                if #hits == 1 then best_href = hits[1] end
             end
             if best_href then
                 mapped[#mapped + 1] = {

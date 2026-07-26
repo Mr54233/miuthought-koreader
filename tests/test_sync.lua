@@ -168,6 +168,36 @@ T.case("引文全不匹配本地书", function()
     T.ok(report == nil and tostring(err):find("匹配", 1, true), "映射失败报错: " .. tostring(err))
 end)
 
+T.case("分批预算:拉满即收工,缓存命中免费", function()
+    local rows = {}
+    for i = 1, 10 do rows[i] = {chapterUid = i, title = "第" .. i .. "章", chapterIdx = i} end
+    local network_calls = 0
+    local deps, calls = make_deps({
+        api = {chapters = function() return {data = rows} end},
+        annotations = {
+            fetch_chapter = function(_, _, uid)
+                local n = tonumber(uid)
+                if n <= 2 then
+                    -- 前两章:断点缓存命中,不占预算
+                    return {underlines = {{range = "0-7", markText = "春江潮水连海平"}},
+                        review_map = {}, review_groups = {}, resumed = true,
+                        underline_count = 1, thought_count = 0, thought_entry_count = 0, errors = {}}
+                end
+                network_calls = network_calls + 1
+                return {underlines = {{range = "0-7", markText = "春江潮水连海平"}},
+                    review_map = {}, review_groups = {},
+                    underline_count = 1, thought_count = 0, thought_entry_count = 0, errors = {}}
+            end,
+        },
+        fetch_budget = 3,
+    })
+    local report, err = Sync.run(deps)
+    T.ok(report, "应成功: " .. tostring(err))
+    T.eq(network_calls, 3, "只发 3 个网络请求")
+    T.eq(report.chapters_pending, 5, "2 缓存 + 3 网络 = 5 章处理,剩 5 章待拉")
+    T.eq(#calls.injected.mapped, 5, "已拉到的 5 章照常注入")
+end)
+
 T.case("连续硬失败触发断网熔断", function()
     local rows = {}
     for i = 1, 10 do rows[i] = {chapterUid = i, title = "第" .. i .. "章", chapterIdx = i} end
