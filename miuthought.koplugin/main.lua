@@ -81,6 +81,12 @@ function Plugin:require_login() if not self:logged_in() then self:info(_("Not lo
 
 function Plugin:home_menu()
     return {
+        {text="选择书籍同步想法",callback=self:safe("fm_sync",function()
+            self:pick_book("选择要同步的 EPUB(长按文件名选中)",function(path) self:sync_entry(path) end)
+        end)},
+        {text="选择书籍绑定微信读书",callback=self:safe("fm_bind",function()
+            self:pick_book("选择要绑定的 EPUB(长按文件名选中)",function(path) self:bind_book(path) end)
+        end)},
         {text="账户",sub_item_table_func=function() return self:account_menu() end},
         {text="更新与关于",sub_item_table_func=function() return self:update_about_menu() end},
     }
@@ -96,25 +102,52 @@ function Plugin:reader_menu()
     }
 end
 
+-- 文件管理器里直接选一本 EPUB,不必先打开书。
+function Plugin:pick_book(title,on_pick)
+    local PathChooser=require("ui/widget/pathchooser")
+    local start_dir=_G.G_reader_settings and _G.G_reader_settings:readSetting("home_dir") or nil
+    if not start_dir then
+        local ok,fmutil=pcall(require,"apps/filemanager/filemanagerutil")
+        if ok and type(fmutil.getDefaultDir)=="function" then start_dir=fmutil.getDefaultDir() end
+    end
+    local chooser=PathChooser:new{
+        title=title,
+        path=start_dir,
+        select_directory=false,
+        select_file=true,
+        file_filter=function(filename) return tostring(filename):lower():match("%.epub$")~=nil end,
+        onConfirm=function(path)
+            if tostring(path):lower():find(".觅想.epub",1,true) then
+                self:info("这是觅想版副本,请选择原书")
+                return
+            end
+            on_pick(path)
+        end,
+    }
+    UIManager:show(chooser)
+end
+
 -- ===== 绑定微信读书 =====
 function Plugin:current_doc_path()
     local doc=self.ui and self.ui.document
     return doc and doc.file or nil
 end
 
-function Plugin:doc_title_guess()
-    local props=(self.ui and self.ui.doc_props) or {}
-    local title=U.trim(tostring(props.display_title or props.title or ""))
-    if title~="" then return title end
-    local name=tostring(self:current_doc_path() or ""):match("([^/\\]+)$") or ""
+function Plugin:doc_title_guess(path)
+    if not path or path==self:current_doc_path() then
+        local props=(self.ui and self.ui.doc_props) or {}
+        local title=U.trim(tostring(props.display_title or props.title or ""))
+        if title~="" then return title end
+    end
+    local name=tostring(path or self:current_doc_path() or ""):match("([^/\\]+)$") or ""
     return (name:gsub("%.[eE][pP][uU][bB]$",""))
 end
 
-function Plugin:bind_book()
-    local path=self:current_doc_path()
+function Plugin:bind_book(path,on_bound)
+    path=path or self:current_doc_path()
     if not path then self:info("请先打开一本本地书") return end
     local current=Binding.get(self.store,path)
-    if not current then self:bind_search(path) return end
+    if not current then self:bind_search(path,on_bound) return end
     local ButtonDialog=require("ui/widget/buttondialog")
     local display=tostring(current.title or current.book_id or "")
     if tostring(current.author or "")~="" then display=display.." · "..tostring(current.author) end
@@ -122,7 +155,7 @@ function Plugin:bind_book()
     dialog=ButtonDialog:new{
         title="当前绑定:\n"..display,
         buttons={
-            {{text="重新绑定",callback=function() UIManager:close(dialog); self:bind_search(path) end}},
+            {{text="重新绑定",callback=function() UIManager:close(dialog); self:bind_search(path,on_bound) end}},
             {{text="解除绑定",callback=function() UIManager:close(dialog); Binding.clear(self.store,path); self:toast("已解除绑定") end}},
             {{text="取消",callback=function() UIManager:close(dialog) end}},
         },
@@ -130,10 +163,10 @@ function Plugin:bind_book()
     UIManager:show(dialog)
 end
 
-function Plugin:bind_search(path)
+function Plugin:bind_search(path,on_bound)
     if not self:require_login() then return end
     local d
-    d=InputDialog:new{title="搜索微信读书",input=self:doc_title_guess(),buttons={{
+    d=InputDialog:new{title="搜索微信读书",input=self:doc_title_guess(path),buttons={{
         {text="取消",id="close",callback=function() UIManager:close(d) end},
         {text="搜索",is_enter_default=true,callback=function()
             local q=U.trim(d:getInputText()); UIManager:close(d)
@@ -157,6 +190,7 @@ function Plugin:bind_search(path)
                         if menu then UIManager:close(menu) end
                         Binding.save(self.store,path,{book_id=row.book_id,title=row.title,author=row.author})
                         self:toast("已绑定:"..(row.title~="" and row.title or row.book_id))
+                        if on_bound then on_bound() end
                     end}
                 end
                 menu=Menu:new{title="选择要绑定的书",item_table=items,is_borderless=true,title_bar_fm_style=true}
@@ -241,17 +275,37 @@ function Plugin:onShowMiuThought()
 end
 
 -- ===== 同步划线与想法 =====
+-- 阅读器入口:同步会占住界面,先说清楚,并指路文件管理器流程。
 function Plugin:sync_thoughts()
     local path=self:current_doc_path()
     if not path then self:info("请先打开一本本地书") return end
-    if not tostring(path):lower():match("%.epub$") then self:info("只支持 EPUB 格式的本地书") return end
+    UIManager:show(ConfirmBox:new{
+        text="同步期间将显示进度,无法翻页(点按屏幕可取消)。\n\n也可以不打开书:在文件管理器的觅想菜单里直接选书同步,同步完再阅读副本。",
+        ok_text="开始同步",
+        ok_callback=function() self:sync_entry(path) end,
+        cancel_text="取消",
+    })
+end
+
+-- 统一同步入口:阅读器与文件管理器共用,path 为原书路径。
+function Plugin:sync_entry(path)
+    if not tostring(path or ""):lower():match("%.epub$") then self:info("只支持 EPUB 格式的本地书") return end
     if not self:require_login() then return end
     local EpubReader=require("miuthought.epub_reader")
     local available,gate_err=EpubReader.available()
     if not available then self:info(tostring(gate_err)) return end
-    local bound=Binding.get(self.store,path)
-    if not bound then self:info("尚未绑定微信读书书目,请先在菜单里完成「绑定微信读书」") return end
     if not self:is_online() then self:info(_("Network unavailable")) return end
+    local bound=Binding.get(self.store,path)
+    if not bound then
+        -- 未绑定不再只报错:直接引导绑定,绑定完成后自动继续同步。
+        UIManager:show(ConfirmBox:new{
+            text="这本书还没绑定微信读书书目。\n先绑定,完成后自动开始同步?",
+            ok_text="去绑定",
+            ok_callback=function() self:bind_search(path,function() self:sync_entry(path) end) end,
+            cancel_text="取消",
+        })
+        return
+    end
     local Trapper=require("ui/trapper")
     Trapper:wrap(function() self:_sync_run(path,bound) end)
 end
@@ -288,7 +342,7 @@ function Plugin:_sync_run(path,bound)
             progress=function(phase,i,n,text)
                 local msg
                 if phase=="chapters" then msg="正在获取章节列表…"
-                elseif phase=="fetch" then msg=string.format("正在拉取划线与想法 %d/%d\n%s",i,n,tostring(text or ""))
+                elseif phase=="fetch" then msg=string.format("正在拉取划线与想法 %d/%d\n%s\n(点按屏幕可取消)",i,n,tostring(text or ""))
                 elseif phase=="map" then msg="正在匹配本地章节…"
                 else msg="正在生成觅想版副本…\n(书较大时需要一点时间)" end
                 return Trapper:info(msg)
