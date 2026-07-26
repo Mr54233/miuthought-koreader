@@ -28,10 +28,44 @@ local function fake_book()
 end
 
 T.case("resolve 路径规范化", function()
-    T.eq(EpubReader.resolve("OEBPS", "Text/ch%201.xhtml"), "OEBPS/Text/ch 1.xhtml", "url_decode+拼接")
+    T.eq(EpubReader.resolve("OEBPS", "Text/ch%201.xhtml"), "OEBPS/Text/ch 1.xhtml", "百分号解码+拼接")
     T.eq(EpubReader.resolve("OEBPS", "Text/../Text/ch2.xhtml"), "OEBPS/Text/ch2.xhtml", "../ 折叠")
     T.eq(EpubReader.resolve("", "ch.xhtml"), "ch.xhtml", "根目录 OPF")
     T.eq(EpubReader.resolve("OEBPS", "/abs/ch.xhtml"), "abs/ch.xhtml", "绝对路径去除首斜杠")
+    T.eq(EpubReader.resolve("OEBPS", "a&amp;b.xhtml"), "OEBPS/a&b.xhtml", "XML 实体解码")
+    T.eq(EpubReader.resolve("OEBPS", "ch+1.xhtml"), "OEBPS/ch+1.xhtml", "+ 是路径字面量,不转空格")
+end)
+
+T.case("命名空间前缀的 OPF/container 也能解析", function()
+    local ns_container = [[<odc:container xmlns:odc="urn:oasis:names:tc:opendocument:xmlns:container">
+<odc:rootfiles><odc:rootfile full-path="content.opf"/></odc:rootfiles></odc:container>]]
+    local ns_opf = [[<opf:package xmlns:opf="http://www.idpf.org/2007/opf"><opf:manifest>
+<opf:item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+</opf:manifest><opf:spine><opf:itemref idref="c1"/></opf:spine></opf:package>]]
+    local book = STUBS.archiver_mock({
+        {path = "mimetype", content = "application/epub+zip"},
+        {path = "META-INF/container.xml", content = ns_container},
+        {path = "content.opf", content = ns_opf},
+        {path = "ch1.xhtml", content = "<html><body>一</body></html>"},
+    })
+    local meta, err = EpubReader.load("ns.epub", book)
+    T.ok(meta, "带前缀应解析成功: " .. tostring(err))
+    T.eq(meta.opf_dir, "", "根目录 OPF")
+    T.eq(#meta.spine, 1, "spine 解析")
+    T.eq(meta.spine[1].href, "ch1.xhtml", "前缀 itemref/item 均命中")
+end)
+
+T.case("zip 重复条目在 names 中去重", function()
+    local book = STUBS.archiver_mock({
+        {path = "mimetype", content = "application/epub+zip"},
+        {path = "META-INF/container.xml", content = CONTAINER},
+        {path = "OEBPS/content.opf", content = OPF},
+        {path = "OEBPS/Text/ch 1.xhtml", content = "<html/>"},
+        {path = "OEBPS/Text/ch2.xhtml", content = "<html/>"},
+        {path = "OEBPS/Text/ch2.xhtml", content = "<html>dup</html>"},
+    })
+    local meta = EpubReader.load("dup.epub", book)
+    T.eq(#meta.names, 5, "重复路径只入列一次")
 end)
 
 T.case("load 解析 container/OPF/spine", function()

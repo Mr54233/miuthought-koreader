@@ -132,40 +132,61 @@ package.preload["libs/libkoreader-lfs"] = function()
     }
 end
 
--- 内存版 ffi/archiver:与真实 API 同形(Reader:new/open/iterate/seek/extractToMemory/close,
--- Writer:new/open/setZipCompression/addFileFromMemory/close)。
+-- 内存版 ffi/archiver:与真实 API 同语义(koreader-base ffi/archiver.lua):
+-- - Reader 的 entries 索引只在 next()/iterate() 中惰性建立,seek/extractToMemory
+--   对未迭代到的条目返回 nil(真实实现如此,曾掩盖过一个真机必炸的 bug)。
+-- - Writer 的 open/setZipCompression/addFileFromMemory 成功返回 true,失败返回 nil 并置 self.err。
 -- files: 有序数组 {{path=..., content=...}, ...} 模拟 zip 条目顺序。
+-- mock_opts(可选):{fail_write_path = "..."} 让 Writer 写到该条目时失败。
 -- mod._last_writer 记录最后创建的 Writer 供测试断言。
-function M.archiver_mock(files)
+function M.archiver_mock(files, mock_opts)
     local mod = {}
+    mock_opts = mock_opts or {}
 
     local Reader = {}
     Reader.__index = Reader
-    function Reader:new() return setmetatable({}, self) end
+    function Reader:new() return setmetatable({entries = {}, size = 0}, self) end
     function Reader:open(path)
         self.path = path
-        self.by_path = {}
-        for _, f in ipairs(files) do self.by_path[f.path] = f end
+        self.index = 0
         return true
     end
-    function Reader:iterate()
-        local i = 0
-        return function()
-            i = i + 1
-            local f = files[i]
-            if not f then return nil end
-            return {path = f.path, mode = "file", size = #f.content, index = i}
+    function Reader:next()
+        local i = math.floor(self.index or 0) + 1
+        local f = files[i]
+        if not f then return nil end
+        self.index = i
+        local entry = self.entries[i]
+        if not entry then
+            entry = {path = f.path, mode = f.mode or "file", size = #f.content, index = i}
+            self.entries[i] = entry
+            self.size = self.size + 1
         end
+        self.entries[entry.path] = entry
+        return entry
+    end
+    function Reader:iterate(keep_pos)
+        if self.index ~= 0 and not keep_pos then self.index = 0 end
+        return self.next, self
     end
     function Reader:seek(key)
-        local f = type(key) == "number" and files[key] or self.by_path[key]
-        return f and {path = f.path, mode = "file", size = #f.content} or nil
+        local entry = self.entries[key]
+        if not entry then return end
+        if entry.index == self.index then return entry end
+        for _ in self:iterate(entry.index > self.index) do
+            if entry.index == self.index then return entry end
+        end
     end
     function Reader:extractToMemory(key)
-        local f = type(key) == "number" and files[key] or self.by_path[key]
-        return f and f.content or nil
+        local entry = self:seek(key)
+        if not entry or entry.mode ~= "file" then return end
+        self.index = self.index + 0.1
+        return files[entry.index].content
     end
-    function Reader:close() end
+    function Reader:close(keep_info)
+        self.index = nil
+        if not keep_info then self.entries = {}; self.size = 0 end
+    end
 
     local Writer = {}
     Writer.__index = Writer
@@ -178,13 +199,25 @@ function M.archiver_mock(files)
         self.opened_path, self.format = path, format
         return true
     end
-    function Writer:setZipCompression(method) self.compression = method end
+    function Writer:setZipCompression(method)
+        self.compression = method
+        return true
+    end
     function Writer:addFileFromMemory(entry_path, content, mtime)
+        self.err = nil
+        if mock_opts.fail_write_path == entry_path then
+            self.err = "mock 写入失败"
+            return
+        end
         self.entries[#self.entries + 1] = {
             path = entry_path, content = content, mtime = mtime, compression = self.compression,
         }
+        return true
     end
-    function Writer:close() self.closed = true end
+    function Writer:close()
+        self.err = nil
+        self.closed = true
+    end
 
     mod.Reader, mod.Writer = Reader, Writer
     return mod

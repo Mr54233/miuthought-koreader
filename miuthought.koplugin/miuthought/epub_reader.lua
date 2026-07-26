@@ -1,7 +1,7 @@
 -- EPUB 元数据读取:ffi/archiver (libarchive) 之上解析 container.xml → OPF → spine。
 -- 要求 KOReader >= v2025.08;详见 docs/task3-zip-feasibility.md。
-local U = require("miuthought.util")
-
+-- 注意:真实 Archiver.Reader 的 seek/extractToMemory 只认迭代过程中建立的条目索引,
+-- 任何提取前必须先 iterate 经过目标条目。
 local E = {}
 
 local function get_archiver(archiver)
@@ -16,8 +16,23 @@ function E.available()
     return mod ~= nil, err
 end
 
+local XML_ENTITIES = {amp = "&", lt = "<", gt = ">", quot = '"', apos = "'"}
+
+-- OPF/container 里的 href 是 XML 属性 + URI:先解 XML 实体,再解 %xx。
+-- URI 路径中的 + 是字面量,不能按表单编码转空格。
+local function decode_href(value)
+    value = tostring(value or "")
+    value = value:gsub("&#[xX]?(%x+);", function(hex)
+        local code = tonumber(hex, 16) or tonumber(hex, 10)
+        return (code and code < 0x80) and string.char(code) or ""
+    end)
+    value = value:gsub("&(%a+);", function(name) return XML_ENTITIES[name] or ("&" .. name .. ";") end)
+    value = value:gsub("%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end)
+    return value
+end
+
 function E.resolve(base_dir, href)
-    local raw = U.url_decode(tostring(href or ""))
+    local raw = decode_href(href)
     raw = raw:gsub("^/+", "")
     local joined = (tostring(base_dir or "") ~= "" and not tostring(href or ""):match("^/"))
         and (base_dir .. "/" .. raw) or raw
@@ -36,6 +51,12 @@ local function attr(tag, name)
     return tag:match(name .. '%s*=%s*"([^"]*)"') or tag:match(name .. "%s*=%s*'([^']*)'")
 end
 
+-- 老工具链会给 OPF/OCF 元素绑定命名空间前缀(<opf:item>、<odc:rootfile>),
+-- 解析前统一剥掉元素名前缀;仅用于匹配,不回写。
+local function strip_ns_prefix(xml)
+    return (tostring(xml or ""):gsub("<(%/?)[%w_%-]+:", "<%1"))
+end
+
 local function open_reader(path, archiver)
     local mod, err = get_archiver(archiver)
     if not mod then return nil, err end
@@ -49,7 +70,7 @@ function E.load(path, archiver)
     if not reader then return nil, err end
     local names, has = {}, {}
     for entry in reader:iterate() do
-        if entry.mode == "file" then
+        if entry.mode == "file" and not has[entry.path] then
             names[#names + 1] = entry.path
             has[entry.path] = true
         end
@@ -59,7 +80,7 @@ function E.load(path, archiver)
         reader:close()
         return nil, "EPUB 缺少 META-INF/container.xml,不是有效的 EPUB"
     end
-    local rootfile = container:match("<rootfile%s[^>]*>") or ""
+    local rootfile = strip_ns_prefix(container):match("<rootfile%s[^>]*>") or ""
     local opf_path = attr(rootfile, "full%-path")
     opf_path = opf_path and E.resolve("", opf_path) or nil
     if not opf_path or not has[opf_path] then
@@ -71,8 +92,9 @@ function E.load(path, archiver)
     if not opf then return nil, "无法读取 OPF:" .. opf_path end
 
     local opf_dir = opf_path:match("^(.*)/[^/]+$") or ""
+    local scan = strip_ns_prefix(opf)
     local manifest = {}
-    for tag in opf:gmatch("<item[%s/][^>]*>") do
+    for tag in scan:gmatch("<item[%s/][^>]*>") do
         local id = attr(tag, "id")
         local href = attr(tag, "href")
         if id and href then
@@ -80,7 +102,7 @@ function E.load(path, archiver)
         end
     end
     local spine = {}
-    for tag in opf:gmatch("<itemref[%s/][^>]*>") do
+    for tag in scan:gmatch("<itemref[%s/][^>]*>") do
         local idref = attr(tag, "idref")
         local item = idref and manifest[idref]
         if item then
@@ -91,12 +113,22 @@ function E.load(path, archiver)
     return {path = path, names = names, has = has, opf_path = opf_path, opf_dir = opf_dir, spine = spine}
 end
 
+-- 一次性读取:新开 Reader 迭代到目标条目再提取(seek 只认已迭代的条目)。
 function E.read(meta, name, archiver)
     local reader, err = open_reader(meta.path, archiver)
     if not reader then return nil, err end
-    local content = reader:seek(name) and reader:extractToMemory(name) or nil
+    local content
+    for entry in reader:iterate() do
+        if entry.path == name then
+            content = reader:extractToMemory(name)
+            break
+        end
+    end
+    local read_err = reader.err
     reader:close()
-    if content == nil then return nil, "EPUB 中不存在条目:" .. tostring(name) end
+    if content == nil then
+        return nil, "无法读取 EPUB 条目:" .. tostring(name) .. (read_err and("(" .. read_err .. ")") or "")
+    end
     return content
 end
 
