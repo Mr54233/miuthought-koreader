@@ -8,7 +8,7 @@ local ChapterMap = {}
 -- 匹配算法版本:任何影响匹配结果的改动(引文窗口、投票规则、目录页判定、
 -- 归一化规则)都必须 +1。映射缓存把它写进指纹,算法一改缓存整体作废——
 -- 否则旧算法缓存下来的「匹配失败」会永久生效,改进永远轮不到那些章节。
-ChapterMap.ALGO_VERSION = 3
+ChapterMap.ALGO_VERSION = 4
 
 local ENTITIES = {
     amp = "&", lt = "<", gt = ">", quot = '"', apos = "'",
@@ -74,10 +74,14 @@ local function utf8_prefix(text, max_bytes)
     return text:sub(1, cut)
 end
 
+-- 保持 underlines 原始顺序取引文(热门划线本身按热度排,「二月二,龙抬头。」
+-- 这种全民短句就在最前),不按长度排序——长引文在精校版差异面前最脆,
+-- 按长度优先曾把 5 个 90 字节的坏引文选满,把能精确命中的短名句挤出局。
 function ChapterMap.quotes_of(underlines, limit)
-    limit = tonumber(limit) or 5
+    limit = tonumber(limit) or 8
     local out, seen = {}, {}
     for _, row in ipairs(underlines or {}) do
+        if #out >= limit then break end
         if type(row) == "table" then
             for _, key in ipairs({"markText", "bookmarkText", "rangeText", "abstract", "text", "content"}) do
                 local quote = utf8_prefix(ChapterMap.normalize(scalar_str(row[key])), MAX_QUOTE_BYTES)
@@ -89,8 +93,6 @@ function ChapterMap.quotes_of(underlines, limit)
             end
         end
     end
-    table.sort(out, function(a, b) return #a > #b end)
-    while #out > limit do table.remove(out) end
     return out
 end
 
@@ -176,6 +178,13 @@ function ChapterMap.build(spine, read_text, chapters)
                 end
             end
             if tied then best_href = nil end
+            -- 弱证据不定案:多条引文只中 1 条,很可能是俗语/名句在别章复现的
+            -- 孤证(真实翻车:《惊蛰》5 条引文 4 条被精校差异灭掉,剩下的
+            -- 「命里有时终须有」把整章错投给《日出》)。至少 2 条支持,
+            -- 或该章本来只有 1 条引文且命中,才允许直接定案;否则转标题兜底。
+            if best_href and best_score < math.min(2, #quotes_list[ci]) then
+                best_href = nil
+            end
             if not best_href then
                 local hits = title_hits[ci] or {}
                 if #hits == 1 then best_href = hits[1] end

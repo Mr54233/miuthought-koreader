@@ -67,6 +67,41 @@ T.case("巨型省略引文按前缀窗口匹配", function()
     T.eq(#mapped, 1, "前缀命中,整章不再因巨型引文失配")
 end)
 
+T.case("引文按热度原序取,短名句不被长引文挤出", function()
+    local underlines = {
+        {range = "0-3", markText = "二月二,龙抬头。"},
+        {range = "1-2", markText = string.rep("很长的引文占位内容", 12)},
+        {range = "2-3", markText = string.rep("另一条很长的引文内容", 12)},
+    }
+    local quotes = ChapterMap.quotes_of(underlines)
+    T.eq(quotes[1], "二月二,龙抬头。", "第一条热门短句保住投票席位")
+end)
+
+T.case("孤证引文不定案:转标题兜底救回正确章节", function()
+    -- 复刻剑来翻车:5 条引文里 4 条被精校差异灭掉,剩下的俗语只在错误
+    -- 章节里出现;旧算法 1 分定案错章,新算法转标题兜底定对。
+    local files = {
+        ["c07.xhtml"] = [[<html><head><title>第一章 惊蛰</title></head><body>
+<h2>第一章 惊蛰</h2><p>二月二,龙抬头。少年推开门。</p></body></html>]],
+        ["c09.xhtml"] = [[<html><head><title>第三章 日出</title></head><body>
+<h2>第三章 日出</h2><p>命里有时终须有,命里无时莫强求,这是老人常说的话。</p></body></html>]],
+    }
+    local spine = {{href = "c07.xhtml"}, {href = "c09.xhtml"}}
+    local chapters = {{
+        uid = "999", title = "第一章 惊蛰",
+        underlines = {
+            {range = "0-1", markText = "命里有时终须有,命里无时莫强求,这是老人常说的话"},
+            {range = "1-2", markText = "精校版里已经不存在的第一句引文内容甲"},
+            {range = "2-3", markText = "精校版里已经不存在的第二句引文内容乙"},
+            {range = "3-4", markText = "精校版里已经不存在的第三句引文内容丙"},
+            {range = "4-5", markText = "精校版里已经不存在的第四句引文内容丁"},
+        },
+    }}
+    local mapped, unmatched = ChapterMap.build(spine, function(h) return files[h] end, chapters)
+    T.eq(#mapped, 1, "应经标题兜底命中: unmatched=" .. tostring(#unmatched))
+    T.eq(mapped[1].href, "c07.xhtml", "孤证不定案,标题救回正确章节(而非 1 分错投 c09)")
+end)
+
 T.case("投票平票视为歧义转兜底", function()
     local files = {
         ["a.xhtml"] = "<html><body><p>两个文件都有的同一段引文内容。甲文件专属段落。</p></body></html>",
