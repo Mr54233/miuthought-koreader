@@ -1,4 +1,4 @@
-local WebFetch = require("miuthought.web_fetch")
+local WebFetch = require("pickthought.web_fetch")
 
 -- fixture 来自真机探测(bestbookmarks / review/list 的真实形状)
 local BEST = {bestBookMarks = {synckey = 1, totalCount = 3, chapters = {}, items = {

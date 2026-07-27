@@ -1,4 +1,4 @@
-local Thoughts = require("miuthought.thoughts")
+local Thoughts = require("pickthought.thoughts")
 local SQ3 = require("lua-ljsqlite3/init")
 
 -- 最小 store mock:book_dir 返回一个伪目录(ThoughtDB 在 mock SQLite 下用内存库,

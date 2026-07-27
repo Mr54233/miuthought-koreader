@@ -116,7 +116,7 @@ function WebFetch:fetch_chapter(book_id, uid, progress)
     local chapter_uid = tostring(uid)
     local by_uid, marks_err = self:_marks_for(book_id)
     if not by_uid then
-        logger.warn("[MiuThought][WebFetch] bestbookmarks failed",
+        logger.warn("[撷思][WebFetch] bestbookmarks failed",
             "book=", tostring(book_id), "error=", tostring(marks_err))
         return {
             book_id = tostring(book_id), chapter_uid = chapter_uid,
@@ -133,7 +133,7 @@ function WebFetch:fetch_chapter(book_id, uid, progress)
         reviews_data = data
     else
         errors[#errors + 1] = tostring(data)
-        logger.warn("[MiuThought][WebFetch] reviews failed",
+        logger.warn("[撷思][WebFetch] reviews failed",
             "book=", tostring(book_id), "chapter=", chapter_uid, "error=", tostring(data))
     end
     progress("thoughts", 1, 1, "")

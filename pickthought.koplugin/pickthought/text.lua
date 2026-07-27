@@ -2,7 +2,7 @@ local Text = {}
 local lang = (os.getenv("LANG") or ""):lower()
 local zh = lang:find("zh", 1, true) ~= nil or lang == ""
 local M = {
-["MiuRead"]="觅阅 · 微信读书助手",["Independent WeRead client for KOReader."]="独立实现的 KOReader 微信读书客户端。",
+["撷思"]="撷思 · 微信读书助手",["Independent WeRead client for KOReader."]="独立实现的 KOReader 微信读书客户端。",
 ["Account"]="账户",["QR login"]="扫码登录",["Manual credentials"]="手动导入凭据",["Account status"]="账户状态",["Clear account data"]="清除账号数据",["Logout"]="退出登录",
 ["My bookshelf"]="我的书架",["Books"]="书籍",["Official accounts"]="公众号",["Search books"]="搜索书籍",["Paste reader link"]="粘贴阅读链接",
 ["Reading sync"]="阅读同步",["Sync current book position"]="同步当前书籍位置",["Reading time sync"]="阅读时间同步",["Sync status"]="查看同步状态",["Automatic detection"]="自动检测设置",["Advanced"]="高级功能",
@@ -20,10 +20,10 @@ local M = {
 ["Verification code"]="验证码",["Enter the four-digit code shown on your phone."]="输入手机上显示的四位验证码。",["Login cancelled"]="登录已取消",["QR code expired"]="二维码已过期",
 ["Network unavailable"]="网络不可用",["Operation failed"]="操作失败",["No readable chapter found"]="没有可阅读章节",["No cached file"]="没有缓存文件",
 ["Current device"]="本机",["Other device"]="其他设备",["Unknown"]="未知",["Upload local position"]="上传本机位置",["Use other device position"]="使用其他设备位置",["Refresh remote position"]="刷新其他设备位置",["Enter percentage"]="输入百分比跳转",
-["Conflict"]="位置冲突",["Automatic upload paused"]="自动上传已暂停",["Progress uploaded"]="位置已上传",["Jump requested"]="已请求跳转",["No matching MiuRead book is open."]="当前未打开可识别的觅阅书籍。",
+["Conflict"]="位置冲突",["Automatic upload paused"]="自动上传已暂停",["Progress uploaded"]="位置已上传",["Jump requested"]="已请求跳转",["No matching 撷思 book is open."]="当前未打开可识别的撷思书籍。",
 ["Enabled"]="已开启",["Disabled"]="已关闭",["Running"]="运行中",["Waiting"]="等待中",["Paused"]="已暂停",["Offline"]="离线",["Last upload"]="最近上传",["Session uploads"]="本次会话上传次数",
 ["Open-time remote check"]="打开书籍时检测其他设备位置",["Resume remote check"]="长时间唤醒后重新检测",["Protected automatic upload"]="受保护的自动上传",["Require verified remote position"]="上传前验证其他设备位置",
-["Clear current sync state"]="清除当前书籍同步状态",["Detailed sync information"]="查看详细同步信息",["Return to MiuRead bookshelf"]="返回觅阅书架",["Redownload current book"]="重新下载当前书",["More settings"]="更多设置",
+["Clear current sync state"]="清除当前书籍同步状态",["Detailed sync information"]="查看详细同步信息",["Return to 撷思 bookshelf"]="返回撷思书架",["Redownload current book"]="重新下载当前书",["More settings"]="更多设置",
 ["Source code is independently implemented."]="本项目代码为独立重新实现。",["Unofficial client"]="非官方客户端",["Feature-complete beta"]="功能完整测试版",
 ["This build has not been verified with every Kindle model or every WeRead book."]="本版本尚未覆盖所有 Kindle 型号与所有微信读书书籍的实机验证。",
 ["Update package downloaded"]="更新包已下载",["Update installed"]="更新已安装",["Already current"]="已是最新版本",["Invalid update package"]="更新包无效",

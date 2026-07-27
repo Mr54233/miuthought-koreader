@@ -17,14 +17,14 @@
 
 - 想法存储从 per-chapter JSON 换成 per-book SQLite(`thoughts.db`),点击锚点走单次索引查询
 - 弹窗换成 KOReader 原生 TextViewer 分页显示,删除自绘 HTML 弹窗
-- **不动**章节映射、后台同步、流式注入、替换模式、防风控、断点续传、`miuxiang-` 锚点格式
+- **不动**章节映射、后台同步、流式注入、替换模式、防风控、断点续传、`pickthought-` 锚点格式
 
 ## 现状速写(改造前)
 
 ```
 同步   WebFetch → review_groups → Thoughts.save  → thoughts/{book}/{uid}.json  (per-chapter)
 注入   重叠合并 → Thoughts.merge → 重写 {uid}.json
-点击   锚点 miuxiang-{book}.{uid}.{range}
+点击   锚点 pickthought-{book}.{uid}.{range}
        → Thoughts.find(读 JSON 遍历找 range)
        → Thoughts.popup_parts_cached(渲染 HTML,LRU 8)
        → ThoughtPopup.show(自绘 HTML widget)
@@ -84,7 +84,7 @@ TextViewer:new{
 
 ## 不做什么
 
-- **不改锚点格式**(`miuxiang-{hex}`)——已注入的书不失效,`epub_inject.lua` 零改动
+- **不改锚点格式**(`pickthought-{hex}`)——已注入的书不失效,`epub_inject.lua` 零改动
 - **不改章节映射 / 注入 / 同步编排**——这是数据消费者,生产者不变
 - **不双写过渡**——SQLite 唯一真相源,旧 JSON 一次性导入后只读兜底
 - **不做"按段落在线拉全量想法"**——那是独立功能(突破 `/review/list` 天花板),与本改造无关
@@ -93,7 +93,7 @@ TextViewer:new{
 
 - **KOReader 版本**:现要求 ≥ v2025.08,该版本含 `lua-ljsqlite3`,无新约束
 - **桌面测试**:`lua-ljsqlite3` 在 LuaJIT 桌面环境不可用,需在 `tests/stubs.lua` 加 SQLite mock(内存表 + 同 API 语义)。参照 `archiver_mock` 的惰性索引做法
-- **多插件共存**:`thoughts.db` 在我们的数据目录下,与觅阅/微读隔离,沿用 `miuxiang-` 前缀
+- **多插件共存**:`thoughts.db` 在我们的数据目录下,与其他微信读书插件隔离,沿用 `pickthought-` 前缀
 
 ## 验收标准
 

@@ -2,14 +2,14 @@
 -- 用法:tests/run.lua 最先 require 本文件。
 local M = {}
 
-package.path = "miuthought.koplugin/?.lua;" .. package.path
+package.path = "pickthought.koplugin/?.lua;" .. package.path
 
 package.preload["logger"] = function()
     local function noop() end
     return {dbg = noop, info = noop, warn = noop, err = noop}
 end
 
--- 最小 JSON 引擎,满足 miuthought.json 的 encode/decode 需求(测试数据范围内)。
+-- 最小 JSON 引擎,满足 pickthought.json 的 encode/decode 需求(测试数据范围内)。
 package.preload["json"] = function()
     local J = {}
     local ESC = {['"'] = '\\"', ["\\"] = "\\\\", ["\b"] = "\\b", ["\f"] = "\\f",

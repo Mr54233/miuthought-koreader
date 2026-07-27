@@ -1,6 +1,6 @@
-local Config=require("miuthought.config")
-local Digests=require("miuthought.digests")
-local U=require("miuthought.util")
+local Config=require("pickthought.config")
+local Digests=require("pickthought.digests")
+local U=require("pickthought.util")
 local logger=require("logger")
 local Updater={}; Updater.__index=Updater
 
@@ -100,7 +100,7 @@ function Updater:check()
         if ok then
             local valid,reason=validate_manifest(m)
             if valid then
-                logger.info("[MiuRead][Updater] manifest loaded",url,"version=",tostring(m.version))
+                logger.info("[撷思][Updater] manifest loaded",url,"version=",tostring(m.version))
                 if not U.semver_newer(m.version,self.version) then
                     return {current=true,version=m.version,name=m.name,notes=m.notes}
                 end
@@ -109,7 +109,7 @@ function Updater:check()
             errors[#errors+1]=reason
         else
             errors[#errors+1]=tostring(m)
-            logger.warn("[MiuRead][Updater] manifest failed",url,tostring(m))
+            logger.warn("[撷思][Updater] manifest failed",url,tostring(m))
         end
     end
     return nil,errors[#errors] or "无法读取更新清单"
@@ -118,7 +118,7 @@ end
 local function curl_download(url,path)
     local cmd="curl -L --fail --silent --show-error --connect-timeout 20 --max-time 180 -o "
         ..U.shell_quote(path).." "..U.shell_quote(url).." 2>/dev/null"
-    logger.info("[MiuRead][Updater] curl fallback download",url)
+    logger.info("[撷思][Updater] curl fallback download",url)
     return command_ok(os.execute(cmd))
 end
 
@@ -132,7 +132,7 @@ local function download_one(self,url,path)
         if not wrote then return nil,err or "无法保存更新包" end
         return true
     end
-    logger.warn("[MiuRead][Updater] Lua download unavailable or empty; using curl",url,tostring(data))
+    logger.warn("[撷思][Updater] Lua download unavailable or empty; using curl",url,tostring(data))
     if curl_download(url,path) then return true end
     return nil,tostring(data or "下载失败")
 end
@@ -140,7 +140,7 @@ end
 function Updater:download(m)
     local urls=package_urls(m)
     if #urls==0 then error("更新包地址无效") end
-    local p=self.store.updates_dir.."/miuread-"..U.id_name(m.version)..".zip"
+    local p=self.store.updates_dir.."pickthought-"..U.id_name(m.version)..".zip"
     local expected=tostring(m.sha256 or ""):lower():gsub("%s+","")
     if expected=="" then error("更新清单缺少 SHA-256") end
     local expected_size=tonumber(m.size or m.bytes or m.package_size)
@@ -152,16 +152,16 @@ function Updater:download(m)
         if type(raw)=="string" and #raw>0 then
             if expected_size and expected_size>0 and #raw~=expected_size then
                 last_error="更新包大小不符"
-                logger.warn("[MiuRead][Updater] size mismatch",url,"expected=",tostring(expected_size),"actual=",tostring(#raw))
+                logger.warn("[撷思][Updater] size mismatch",url,"expected=",tostring(expected_size),"actual=",tostring(#raw))
             else
                 local actual=Digests.sha256(raw):lower()
                 if actual==expected then
-                    logger.info("[MiuRead][Updater] package downloaded",
+                    logger.info("[撷思][Updater] package downloaded",
                         "source=",tostring(index),"bytes=",tostring(#raw),"version=",tostring(m.version))
                     return p
                 end
                 last_error="更新包校验失败"
-                logger.warn("[MiuRead][Updater] sha256 mismatch",url)
+                logger.warn("[撷思][Updater] sha256 mismatch",url)
             end
         else
             last_error=err or "更新包下载失败或文件为空"
@@ -184,17 +184,17 @@ function Updater:install(path,manifest)
     local backup=self.store.updates_dir.."/backup-"..stamp
     U.remove_tree(stage); U.remove_tree(backup); U.mkdir(unpacked)
 
-    -- 全量包必须只包含一个 miuread.koplugin 根目录。
+    -- 全量包必须只包含一个 pickthought.koplugin 根目录。
     local rc=os.execute("unzip -q "..U.shell_quote(path).." -d "..U.shell_quote(unpacked).." 2>/dev/null")
     if not command_ok(rc) then U.remove_tree(stage); return nil,"解压更新包失败" end
 
-    local incoming=unpacked.."/miuread.koplugin"
+    local incoming=unpacked.."/pickthought.koplugin"
     if not U.file_exists(incoming.."/main.lua") or not U.file_exists(incoming.."/_meta.lua") then
-        U.remove_tree(stage); return nil,"更新包缺少 miuread.koplugin 或插件文件不完整"
+        U.remove_tree(stage); return nil,"更新包缺少 pickthought.koplugin 或插件文件不完整"
     end
     local roots=U.list(unpacked)
     if #roots~=1 or roots[1]~=incoming then
-        U.remove_tree(stage); return nil,"更新包根目录必须只包含 miuread.koplugin"
+        U.remove_tree(stage); return nil,"更新包根目录必须只包含 pickthought.koplugin"
     end
 
     local ok,e=U.copy_tree(self.plugin_root,backup)
@@ -231,7 +231,7 @@ function Updater:install(path,manifest)
 
     U.remove_tree(stage)
     self.store:save_update_state({pending=true,expected=manifest.version,backup=backup,installed_at=os.time()})
-    logger.info("[MiuRead][Updater] update installed","version=",tostring(manifest.version),"backup=",tostring(backup))
+    logger.info("[撷思][Updater] update installed","version=",tostring(manifest.version),"backup=",tostring(backup))
     return true
 end
 

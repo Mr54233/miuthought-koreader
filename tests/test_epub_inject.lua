@@ -1,5 +1,5 @@
-local EpubInject = require("miuthought.epub_inject")
-local Json = require("miuthought.json")
+local EpubInject = require("pickthought.epub_inject")
+local Json = require("pickthought.json")
 
 local CONTAINER = [[<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
 <rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>]]
@@ -39,9 +39,9 @@ local function run_inject(files, chapters, mock_opts, opts)
 end
 
 T.case("copy_path 命名", function()
-    T.eq(EpubInject.copy_path("/books/书.epub"), "/books/书.觅想.epub", "标准 .epub")
-    T.eq(EpubInject.copy_path("/books/书.EPUB"), "/books/书.觅想.epub", "大写后缀")
-    T.eq(EpubInject.copy_path("/books/书"), "/books/书.觅想.epub", "无后缀")
+    T.eq(EpubInject.copy_path("/books/书.epub"), "/books/书.撷思.epub", "标准 .epub")
+    T.eq(EpubInject.copy_path("/books/书.EPUB"), "/books/书.撷思.epub", "大写后缀")
+    T.eq(EpubInject.copy_path("/books/书"), "/books/书.撷思.epub", "无后缀")
 end)
 
 T.case("端到端注入", function()
@@ -53,7 +53,7 @@ T.case("端到端注入", function()
     T.eq(stats.injected, 1, "注入 1 章")
     T.ok(stats.marks >= 1, "至少 1 处锚点")
     T.eq(#stats.unmatched, 0, "无未匹配章节")
-    T.eq(stats.dest, "/books/书.觅想.epub", "dest 默认命名")
+    T.eq(stats.dest, "/books/书.撷思.epub", "dest 默认命名")
 
     local w = Arc._last_writer
     local entries = STUBS.written(w)
@@ -65,9 +65,9 @@ T.case("端到端注入", function()
     for _, e in ipairs(entries) do by_path[e.path] = e end
     local ch1 = by_path["OEBPS/Text/ch1.xhtml"]
     T.ok(ch1.compression == "deflate", "正文用 deflate")
-    T.ok(ch1.content:find('class="miu-thought-mark', 1, true), "锚点 span 注入")
-    T.ok(ch1.content:find('href="#miuxiang-', 1, true), "想法链接注入(专属前缀)")
-    T.ok(ch1.content:find('id="miuread-annotation-style"', 1, true), "内联样式注入 head")
+    T.ok(ch1.content:find('class="pickthought-mark', 1, true), "锚点 span 注入")
+    T.ok(ch1.content:find('href="#pickthought-', 1, true), "想法链接注入(专属前缀)")
+    T.ok(ch1.content:find('id="pickthought-annotation-style"', 1, true), "内联样式注入 head")
     T.ok(ch1.content:find("</title>", 1, true) and ch1.content:find("春江潮水", 1, true), "原结构保留")
     T.eq(by_path["OEBPS/Text/ch2.xhtml"].content, CH2, "未涉及章节逐字节原样")
     T.eq(by_path["OEBPS/Images/cover.png"].compression, "store", "已压缩媒体原样 store")
@@ -87,9 +87,9 @@ T.case("端到端注入", function()
     T.eq(decoded.book_id, "b001", "marker 记录 book_id")
     T.eq(decoded.created, 1234567890, "marker 用注入的 now")
 
-    T.eq(w.opened_path, "/books/书.觅想.epub.tmp-1234567890", "先写带时间戳的 tmp")
-    T.eq(renames[1][1], "/books/书.觅想.epub.tmp-1234567890", "rename src")
-    T.eq(renames[1][2], "/books/书.觅想.epub", "rename dest")
+    T.eq(w.opened_path, "/books/书.撷思.epub.tmp-1234567890", "先写带时间戳的 tmp")
+    T.eq(renames[1][1], "/books/书.撷思.epub.tmp-1234567890", "rename src")
+    T.eq(renames[1][2], "/books/书.撷思.epub", "rename dest")
 end)
 
 T.case("拒绝二次注入(is_copy)", function()
@@ -97,7 +97,7 @@ T.case("拒绝二次注入(is_copy)", function()
     files[#files + 1] = {path = EpubInject.MARKER, content = "{}"}
     T.ok(EpubInject.is_copy("x.epub", STUBS.archiver_mock(files)), "is_copy 识别 marker")
     local stats, err = run_inject(files, CHAPTERS)
-    T.ok(stats == nil and tostring(err):find("觅想", 1, true), "对副本注入应拒绝并报中文错")
+    T.ok(stats == nil and tostring(err):find("撷思", 1, true), "对副本注入应拒绝并报中文错")
 end)
 
 T.case("章节匹配:后缀与未匹配", function()
@@ -121,7 +121,7 @@ T.case("无 head 的章节:样式插到 body 开头", function()
     local entries = STUBS.written(Arc._last_writer)
     local ch1
     for _, e in ipairs(entries) do if e.path == "OEBPS/Text/ch1.xhtml" then ch1 = e end end
-    local style_at = ch1.content:find('id="miuread-annotation-style"', 1, true)
+    local style_at = ch1.content:find('id="pickthought-annotation-style"', 1, true)
     local body_at = ch1.content:find("<body", 1, true)
     T.ok(style_at and body_at and style_at > body_at, "样式落在 body 之后")
 end)
@@ -135,7 +135,7 @@ T.case("大写 HEAD 与无 head/body 碎片的样式插入", function()
     for _, e in ipairs(STUBS.written(Arc._last_writer)) do
         if e.path == "OEBPS/Text/ch1.xhtml" then ch1 = e end
     end
-    local style_at = ch1.content:find('id="miuread-annotation-style"', 1, true)
+    local style_at = ch1.content:find('id="pickthought-annotation-style"', 1, true)
     local head_close = ch1.content:find("</HEAD>", 1, true)
     T.ok(style_at and head_close and style_at < head_close, "大写 </HEAD> 也识别,样式进 head")
 
@@ -206,9 +206,9 @@ T.case("后缀歧义进 unmatched,同一文件多章叠加注入", function()
     for _, e in ipairs(STUBS.written(Arc._last_writer)) do
         if e.path == "OEBPS/part1/ch1.xhtml" then ch1 = e end
     end
-    T.ok(ch1.content:find('data-miu-range="0-7"', 1, true), "第一章锚点在")
-    T.ok(ch1.content:find('data-miu-range="8-15"', 1, true), "第二章锚点叠加在同一文件")
-    local _, style_count = ch1.content:gsub('id="miuread%-annotation%-style"', "")
+    T.ok(ch1.content:find('data-pickthought-range="0-7"', 1, true), "第一章锚点在")
+    T.ok(ch1.content:find('data-pickthought-range="8-15"', 1, true), "第二章锚点叠加在同一文件")
+    local _, style_count = ch1.content:gsub('id="pickthought%-annotation%-style"', "")
     T.eq(style_count, 1, "样式只内联一次")
 end)
 
@@ -249,7 +249,7 @@ T.case("叠加章节引文不中时丢弃,不做数字兜底", function()
     for _, e in ipairs(STUBS.written(Arc._last_writer)) do
         if e.path == "OEBPS/Text/ch1.xhtml" then ch1 = e end
     end
-    T.ok(not ch1.content:find('data-miu-range="0-4"', 1, true), "不得用数字偏移把 43 章划线画进 42 章正文")
+    T.ok(not ch1.content:find('data-pickthought-range="0-4"', 1, true), "不得用数字偏移把 43 章划线画进 42 章正文")
     T.eq(stats.unlocated, 1, "分项:引文不中的叠加划线计入未定位")
 end)
 
@@ -308,8 +308,8 @@ T.case("重叠划线带想法时并入存活锚点", function()
     for _, e in ipairs(STUBS.written(Arc._last_writer)) do
         if e.path == "OEBPS/Text/ch1.xhtml" then ch1 = e end
     end
-    T.ok(ch1.content:find("miu-thought-mark", 1, true), "存活锚点升级为想法虚线")
-    T.ok(ch1.content:find('href="#miuxiang-', 1, true), "存活锚点带想法链接")
+    T.ok(ch1.content:find("pickthought-mark", 1, true), "存活锚点升级为想法虚线")
+    T.ok(ch1.content:find('href="#pickthought-', 1, true), "存活锚点带想法链接")
 end)
 
 T.case("rename 目标已存在时重试", function()

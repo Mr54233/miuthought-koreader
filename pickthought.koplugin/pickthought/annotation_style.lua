@@ -8,21 +8,21 @@ M.MARKER_END = "/* MIUREAD_ANNOTATION_STYLE_V2_END */"
 -- underline rule used by ordinary WeRead marks.
 M.CSS = [[
 /* MIUREAD_ANNOTATION_STYLE_V2_BEGIN */
-.miu-inline-mark {
+.pickthought-inline-mark {
     text-decoration: underline;
 }
-.miu-thought-link {
+.pickthought-link {
     text-decoration: none;
     color: inherit;
 }
-.miu-thought-link .miu-thought-mark {
+.pickthought-link .pickthought-mark {
     color: inherit;
 }
-.miu-thought-mark {
+.pickthought-mark {
     border-bottom: 2px dashed #ff6b35;
     padding-bottom: 2px;
 }
-.miu-thought-star {
+.pickthought-star {
     font-size: 0;
     line-height: 0;
     margin: 0;
@@ -32,7 +32,7 @@ M.CSS = [[
 /* MIUREAD_ANNOTATION_STYLE_V2_END */
 ]]
 
-M.INLINE_STYLE_ID = "miuread-annotation-style"
+M.INLINE_STYLE_ID = "pickthought-annotation-style"
 
 function M.inline_style_tag()
     return '<style id="' .. M.INLINE_STYLE_ID .. '" type="text/css">\n'
@@ -46,11 +46,11 @@ local OLD_MARKERS = {
 }
 
 local TARGET_SELECTORS = {
-    ".miu-inline-mark",
-    ".miu-thought-mark",
-    ".miu-thought-link",
-    ".miu-thought-star",
-    ".miu-has-thought",
+    ".pickthought-inline-mark",
+    ".pickthought-mark",
+    ".pickthought-link",
+    ".pickthought-star",
+    ".pickthought-has-thought",
 }
 
 local function strip_marked_block(css, begin_marker, end_marker)
@@ -75,7 +75,7 @@ local function selector_is_annotation(selector)
     return false
 end
 
--- MiuRead-generated style.css is a flat list of rules. Remove every previous
+-- 旧版生成的 style.css is a flat list of rules. Remove every previous
 -- annotation rule completely, instead of appending a higher-specificity patch.
 local function strip_annotation_rules(css)
     local out = {}
@@ -114,11 +114,11 @@ local function rewrite_class_value(value)
     local kept, seen = {}, {}
     local has_inline, has_thought, has_thought_mark = false, false, false
     for token in tostring(value or ""):gmatch("%S+") do
-        if token == "miu-inline-mark" then
+        if token == "pickthought-inline-mark" then
             has_inline = true
-        elseif token == "miu-has-thought" then
+        elseif token == "pickthought-has-thought" then
             has_thought = true
-        elseif token == "miu-thought-mark" then
+        elseif token == "pickthought-mark" then
             has_thought_mark = true
         elseif not seen[token] then
             seen[token] = true
@@ -126,13 +126,13 @@ local function rewrite_class_value(value)
         end
     end
     if has_thought or has_thought_mark then
-        local out = {"miu-thought-mark"}
+        local out = {"pickthought-mark"}
         for _, token in ipairs(kept) do out[#out + 1] = token end
         local normalized = table.concat(out, " ")
         return normalized, normalized ~= tostring(value or "")
     end
     if has_inline then
-        local out = {"miu-inline-mark"}
+        local out = {"pickthought-inline-mark"}
         for _, token in ipairs(kept) do out[#out + 1] = token end
         local normalized = table.concat(out, " ")
         return normalized, normalized ~= tostring(value or "")
@@ -158,7 +158,7 @@ local function replace_style_block(html, open_at, close_at, replacement)
 end
 
 local function ensure_inline_style(html)
-    if not html:find("data-miuread-book=", 1, true) then return html, false end
+    if not html:find("data-pickthought-book=", 1, true) then return html, false end
 
     local replacement = M.inline_style_tag()
     local open_at, _, close_at = style_bounds_for_token(html, 'id="' .. M.INLINE_STYLE_ID .. '"')
@@ -203,7 +203,7 @@ end
 
 function M.xhtml_is_current(html)
     html = tostring(html or "")
-    if not html:find("data-miuread-book=", 1, true) then return true end
+    if not html:find("data-pickthought-book=", 1, true) then return true end
     return html:find('id="' .. M.INLINE_STYLE_ID .. '"', 1, true) ~= nil
         and html:find(M.MARKER_BEGIN, 1, true) ~= nil
         and html:find("border-bottom: 2px dashed #ff6b35;", 1, true) ~= nil
@@ -212,10 +212,10 @@ end
 function M.css_is_current(css)
     css = tostring(css or "")
     return css:find(M.MARKER_BEGIN, 1, true) ~= nil
-        and css:find(".miu-thought-mark", 1, true) ~= nil
+        and css:find(".pickthought-mark", 1, true) ~= nil
         and css:find("border-bottom: 2px dashed #ff6b35;", 1, true) ~= nil
-        and css:find(".miu-inline-mark.miu-has-thought", 1, true) == nil
-        and css:find(".miu-thought-link .miu-inline-mark", 1, true) == nil
+        and css:find(".pickthought-inline-mark.pickthought-has-thought", 1, true) == nil
+        and css:find(".pickthought-link .pickthought-inline-mark", 1, true) == nil
 end
 
 return M

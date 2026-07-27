@@ -1,12 +1,12 @@
 -- 想法数据:per-book SQLite 存储(thoughts.db),点击锚点按 (chapter_uid, range)
 -- 单次索引查询取想法,交给原生 TextViewer 分页显示。
 --
--- 锚点格式 miuxiang-{hex(book)}.{hex(chap)}.{hex(range)} 与注入侧(epub_inject)
+-- 锚点格式 pickthought-{hex(book)}.{hex(chap)}.{hex(range)} 与注入侧(epub_inject)
 -- 共用,不变:已注入的书不因存储后端切换而失效。
 -- 旧版按章存 thoughts/{uid}.json,首次打开某书数据库时一次性迁移并删旧目录。
-local Json = require("miuthought.json")  -- 仅迁移旧 JSON 用
-local U = require("miuthought.util")
-local ThoughtDB = require("miuthought.thought_db")
+local Json = require("pickthought.json")  -- 仅迁移旧 JSON 用
+local U = require("pickthought.util")
+local ThoughtDB = require("pickthought.thought_db")
 local logger = require("logger")
 local lfs = require("libs/libkoreader-lfs")
 
@@ -31,10 +31,10 @@ local function hex_decode(value)
     end))
 end
 
--- 锚点前缀必须与原版觅阅(miuread-)、微读(wrthought-)不同:
+-- 锚点前缀需与其他微信读书插件不同,避免共存时 tap 拦截冲突。
 -- 三个插件可能同装,各自的 tap 拦截只认领自己的前缀才能共存。
 function Thoughts.anchor(book_id, chapter_uid, range)
-    return "miuxiang-" .. hex_encode(book_id) .. "." .. hex_encode(chapter_uid) .. "." .. hex_encode(range)
+    return "pickthought-" .. hex_encode(book_id) .. "." .. hex_encode(chapter_uid) .. "." .. hex_encode(range)
 end
 
 function Thoughts.href(book_id, chapter_uid, range)
@@ -42,13 +42,13 @@ function Thoughts.href(book_id, chapter_uid, range)
 end
 
 function Thoughts.mark_class(range)
-    return "miu-mark-" .. hex_encode(range)
+    return "pickthought-mark-" .. hex_encode(range)
 end
 
 function Thoughts.parse_href(href)
-    local anchor = tostring(href or ""):match("#?(miuxiang%-[%x%.]+)")
+    local anchor = tostring(href or ""):match("#?(pickthought%-[%x%.]+)")
     if not anchor then return nil end
-    local b, c, r = anchor:match("^miuxiang%-([%x]+)%.([%x]+)%.([%x]+)$")
+    local b, c, r = anchor:match("^pickthought%-([%x]+)%.([%x]+)%.([%x]+)$")
     if not b then return nil end
     local book_id, chapter_uid, range = hex_decode(b), hex_decode(c), hex_decode(r)
     if not book_id or not chapter_uid or not range then return nil end
@@ -87,7 +87,7 @@ local function migrate_legacy(book_id, book_dir, db)
         end
     end
     if any then
-        logger.info("[MiuThought][Thoughts] legacy JSON migrated to sqlite", "book=", tostring(book_id))
+        logger.info("[撷思][Thoughts] legacy JSON migrated to sqlite", "book=", tostring(book_id))
     end
 end
 
@@ -101,7 +101,7 @@ local function open_db(store, book_id)
     if not migrated[book_dir] then
         migrated[book_dir] = true
         local ok_mig = pcall(migrate_legacy, book_id, book_dir, db)
-        if not ok_mig then logger.warn("[MiuThought][Thoughts] migrate_legacy failed", tostring(book_id)) end
+        if not ok_mig then logger.warn("[撷思][Thoughts] migrate_legacy failed", tostring(book_id)) end
     end
     return db
 end
@@ -122,7 +122,7 @@ function Thoughts.save(store, book_id, chapter_uid, groups)
     if not ThoughtDB.put_chapter(db, tostring(chapter_uid), groups) then
         return nil, "想法写入失败"
     end
-    logger.info("[MiuThought][Thoughts] saved", "book=", tostring(book_id),
+    logger.info("[撷思][Thoughts] saved", "book=", tostring(book_id),
         "chapter=", tostring(chapter_uid), "items=", tostring(count))
     return count, Thoughts.db_path(store, book_id)
 end

@@ -1,4 +1,4 @@
-local ChapterMap = require("miuthought.chapter_map")
+local ChapterMap = require("pickthought.chapter_map")
 
 local FILES = {
     ["OEBPS/c1.xhtml"] = [[<html><head><title>卷一</title></head><body>

@@ -1,9 +1,9 @@
 T.case("stub 环境能加载现有纯 Lua 模块", function()
-    local U = require("miuthought.util")
+    local U = require("pickthought.util")
     T.eq(U.trim("  x  "), "x", "util.trim")
-    local Thoughts = require("miuthought.thoughts")
-    T.eq(Thoughts.href("b1", "c2", "3-9"), "#miuxiang-6231.6332.332d39", "thoughts.href hex(专属前缀,与原版觅阅不冲突)")
-    local Annotations = require("miuthought.annotations")
+    local Thoughts = require("pickthought.thoughts")
+    T.eq(Thoughts.href("b1", "c2", "3-9"), "#pickthought-6231.6332.332d39", "thoughts.href hex(专属前缀,与原版撷思不冲突)")
+    local Annotations = require("pickthought.annotations")
     local html = "<html><body><p>春江潮水连海平,海上明月共潮生。</p></body></html>"
     local data = {
         book_id = "b1", chapter_uid = "c2",
@@ -12,11 +12,11 @@ T.case("stub 环境能加载现有纯 Lua 模块", function()
         underline_count = 1, thought_count = 1, errors = {},
     }
     local rendered = Annotations:new(nil):apply(html, data)
-    T.ok(rendered:find("miu-thought-link", 1, true), "注入引擎离线可用,应产出想法锚点")
+    T.ok(rendered:find("pickthought-link", 1, true), "注入引擎离线可用,应产出想法锚点")
 end)
 
 T.case("Thoughts.merge_rows 合并重叠划线的想法组", function()
-    local Thoughts = require("miuthought.thoughts")
+    local Thoughts = require("pickthought.thoughts")
     local rows = {
         {range = "0-7", texts = {{content = "甲说", author = "甲", review_id = "r1"}}},
         {range = "2-5", texts = {{content = "乙说", author = "乙", review_id = "r2"},
@@ -33,7 +33,7 @@ T.case("Thoughts.merge_rows 合并重叠划线的想法组", function()
 end)
 
 T.case("atomic_write 可覆盖已存在文件", function()
-    local U = require("miuthought.util")
+    local U = require("pickthought.util")
     local p = "tests/.tmp_atomic_test"
     T.ok(U.atomic_write(p, "v1", true), "首写")
     T.ok(U.atomic_write(p, "v2", true), "覆盖写(Windows rename 需删目标重试)")

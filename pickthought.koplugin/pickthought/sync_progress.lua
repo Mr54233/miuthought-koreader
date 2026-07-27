@@ -1,4 +1,4 @@
--- 同步进度对话框:改自原觅阅 download_progress.lua。
+-- 同步进度对话框:改自原撷思 download_progress.lua。
 -- 左「取消同步」右「后台同步」;后台后任务继续,可从菜单再次打开本对话框。
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonTable = require("ui/widget/buttontable")
@@ -14,12 +14,12 @@ local TextBoxWidget = require("ui/widget/textboxwidget")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
-local U = require("miuthought.util")
+local U = require("pickthought.util")
 
 local Screen = Device.screen
 
 local SyncProgress = InputContainer:extend{
-    title = "觅想同步",
+    title = "撷思同步",
     on_cancel = nil,
     on_background = nil,
 }
@@ -42,7 +42,7 @@ function SyncProgress:init()
     local group = VerticalGroup:new{align="center"}
 
     self.title_widget = TextBoxWidget:new{
-        text = self.title or "觅想同步",
+        text = self.title or "撷思同步",
         face = Font:getFace("ffont", 22),
         bold = true,
         width = content_width,

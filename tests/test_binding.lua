@@ -1,4 +1,4 @@
-local Binding = require("miuthought.binding")
+local Binding = require("pickthought.binding")
 
 T.case("normalize_search 容错三种形状", function()
     local nested = {books = {

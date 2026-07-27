@@ -1,4 +1,4 @@
-local Util = require("miuthought.util")
+local Util = require("pickthought.util")
 
 local Cookies = {}
 

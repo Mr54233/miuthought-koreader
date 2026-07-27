@@ -133,7 +133,7 @@ function ChapterMap.build(spine, read_text, chapters)
         local ok, html = pcall(read_text, item.href)
         local text = (ok and html) and ChapterMap.normalize(html) or nil
         if not text then
-            logger.warn("[MiuThought][ChapterMap] 读取章节失败",
+            logger.warn("[撷思][ChapterMap] 读取章节失败",
                 "href=", tostring(item.href), "err=", tostring(html))
         elseif text ~= "" then
             -- 目录页检测不再单独扫 all_titles(大书是 千标题×千文件 的天文数字):

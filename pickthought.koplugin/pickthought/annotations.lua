@@ -1,11 +1,11 @@
 local logger = require("logger")
-local Thoughts = require("miuthought.thoughts")
+local Thoughts = require("pickthought.thoughts")
 local ok_socket, socket = pcall(require, "socket")
 
 local Annotations = {}
 Annotations.__index = Annotations
 
-local AnnotationStyle = require("miuthought.annotation_style")
+local AnnotationStyle = require("pickthought.annotation_style")
 local CSS = AnnotationStyle.CSS
 
 local function pause(seconds)
@@ -29,7 +29,7 @@ local function call_with_retry(label, fn)
         local network_down=is_network_failure(last)
         local max_attempts=network_down and 2 or 3
         if attempt < max_attempts then
-            logger.warn("[MiuRead][Annotations] retry", "label=", label, "attempt=", tostring(attempt), "error=", tostring(last))
+            logger.warn("[撷思][Annotations] retry", "label=", label, "attempt=", tostring(attempt), "error=", tostring(last))
             pause(attempt == 1 and 0.6 or 1.4)
         else
             return false,last,network_down
@@ -147,7 +147,7 @@ function Annotations:fetch_chapter(book_id, uid, progress)
     if not ok then
         local err = str(data)
         result.errors[#result.errors + 1] = err
-        logger.warn("[MiuRead][Annotations] underlines failed", "book=", result.book_id, "chapter=", result.chapter_uid, "error=", err)
+        logger.warn("[撷思][Annotations] underlines failed", "book=", result.book_id, "chapter=", result.chapter_uid, "error=", err)
         return result
     end
     result.underline_request_ok = true
@@ -155,7 +155,7 @@ function Annotations:fetch_chapter(book_id, uid, progress)
     result.underlines, invalid_underlines = table_entries(array_from(data, {"underlines", "updated", "bookmarks"}))
     result.underline_count = #result.underlines
     if invalid_underlines > 0 then
-        logger.warn("[MiuRead][Annotations] ignored invalid underline entries",
+        logger.warn("[撷思][Annotations] ignored invalid underline entries",
             "book=", result.book_id, "chapter=", result.chapter_uid,
             "count=", tostring(invalid_underlines))
     end
@@ -177,7 +177,7 @@ function Annotations:fetch_chapter(book_id, uid, progress)
             local rows, invalid = table_entries(array_from(response, {"reviews", "updated"}))
             for _, item in ipairs(rows) do groups[#groups + 1] = item end
             if invalid > 0 then
-                logger.warn("[MiuRead][Annotations] ignored invalid review groups",
+                logger.warn("[撷思][Annotations] ignored invalid review groups",
                     "book=", result.book_id, "chapter=", result.chapter_uid,
                     "batch=", tostring(index), "count=", tostring(invalid))
             end
@@ -185,7 +185,7 @@ function Annotations:fetch_chapter(book_id, uid, progress)
             if network_down then
                 local err="batch "..tostring(index)..": "..str(response)
                 result.errors[#result.errors+1]=err
-                logger.warn("[MiuRead][Annotations] network unavailable; individual thought fallback skipped",
+                logger.warn("[撷思][Annotations] network unavailable; individual thought fallback skipped",
                     "book=",result.book_id,"chapter=",result.chapter_uid,
                     "batch=",tostring(index),"/",tostring(#batches),"error=",str(response))
                 break
@@ -194,7 +194,7 @@ function Annotations:fetch_chapter(book_id, uid, progress)
             -- Fall back to one range at a time only for data-specific failures;
             -- a network outage must not explode into dozens of extra requests.
             local batch_errors = {}
-            logger.warn("[MiuRead][Annotations] thoughts batch failed; trying individual ranges",
+            logger.warn("[撷思][Annotations] thoughts batch failed; trying individual ranges",
                 "book=", result.book_id, "chapter=", result.chapter_uid,
                 "batch=", index, "/", #batches, "error=", str(response))
             for item_index, item in ipairs(batch) do
@@ -206,7 +206,7 @@ function Annotations:fetch_chapter(book_id, uid, progress)
                     local rows, invalid = table_entries(array_from(single_response, {"reviews", "updated"}))
                     for _, row in ipairs(rows) do groups[#groups + 1] = row end
                     if invalid > 0 then
-                        logger.warn("[MiuRead][Annotations] ignored invalid review groups",
+                        logger.warn("[撷思][Annotations] ignored invalid review groups",
                             "book=", result.book_id, "chapter=", result.chapter_uid,
                             "batch=", tostring(index), "item=", tostring(item_index),
                             "count=", tostring(invalid))
@@ -218,7 +218,7 @@ function Annotations:fetch_chapter(book_id, uid, progress)
             if #batch_errors > 0 then
                 local err = table.concat(batch_errors, "; ")
                 result.errors[#result.errors + 1] = "batch " .. index .. ": " .. err
-                logger.warn("[MiuRead][Annotations] thoughts individual fallback incomplete",
+                logger.warn("[撷思][Annotations] thoughts individual fallback incomplete",
                     "book=", result.book_id, "chapter=", result.chapter_uid,
                     "batch=", index, "/", #batches, "error=", err)
             end
@@ -228,11 +228,11 @@ function Annotations:fetch_chapter(book_id, uid, progress)
     result.review_map, result.review_groups, result.thought_count,
         result.thought_entry_count, invalid_reviews = normalize_reviews({reviews=groups})
     if invalid_reviews > 0 then
-        logger.warn("[MiuRead][Annotations] ignored invalid review entries",
+        logger.warn("[撷思][Annotations] ignored invalid review entries",
             "book=", result.book_id, "chapter=", result.chapter_uid,
             "count=", tostring(invalid_reviews))
     end
-    logger.info("[MiuRead][Annotations] chapter fetched", "book=", result.book_id, "chapter=", result.chapter_uid,
+    logger.info("[撷思][Annotations] chapter fetched", "book=", result.book_id, "chapter=", result.chapter_uid,
         "underlines=", result.underline_count, "thought_groups=", result.thought_count,
         "thought_entries=", result.thought_entry_count, "errors=", #result.errors)
     return result
@@ -566,12 +566,12 @@ local function render_text_token(token, marks, data)
                 -- leave the original link as the only clickable target.
                 if active.thought and not token.inside_anchor then
                     local href = Thoughts.href(data.book_id, data.chapter_uid, active.key)
-                    out[#out + 1] = '<a class="miu-thought-link" href="' .. href .. '">'
+                    out[#out + 1] = '<a class="pickthought-link" href="' .. href .. '">'
                     thought_link_open = true
                 end
                 local mark_class = Thoughts.mark_class(active.key)
-                local display_class = active.thought and "miu-thought-mark" or "miu-inline-mark"
-                out[#out + 1] = '<span class="' .. display_class .. ' ' .. mark_class .. '" data-miu-range="' .. active.key .. '">'
+                local display_class = active.thought and "pickthought-mark" or "pickthought-inline-mark"
+                out[#out + 1] = '<span class="' .. display_class .. ' ' .. mark_class .. '" data-pickthought-range="' .. active.key .. '">'
             end
         end
         out[#out + 1] = unit
@@ -598,7 +598,7 @@ end
 function Annotations:apply(html, data)
     if not data or data.underline_count == 0 then return html, "", {underlines=0,thoughts=0} end
     local rendered, alignment = inject(html, data)
-    logger.info("[MiuRead][Annotations] alignment",
+    logger.info("[撷思][Annotations] alignment",
         "book=", tostring(data.book_id or ""), "chapter=", tostring(data.chapter_uid or ""),
         "quote=", tostring(alignment and alignment.quote_aligned or 0),
         "numeric=", tostring(alignment and alignment.numeric or 0),

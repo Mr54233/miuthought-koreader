@@ -35,7 +35,7 @@ function Binding.normalize_search(data)
     end
     for _, row in ipairs(rows_of(data, {"books", "results", "updated"})) do
         -- /store/search 真实响应是分组形状:results=[{type=..., books=[{bookInfo=...}]}],
-        -- 分组行自身无 bookId,需要下钻 books(原 miuread 主菜单同款处理)。
+        -- 分组行自身无 bookId,需要下钻 books(与主菜单同款处理)。
         if type(row) == "table" and type(row.books) == "table"
             and scalar_str(row.bookId or row.book_id) == "" then
             for _, sub in ipairs(row.books) do add_row(sub) end

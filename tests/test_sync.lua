@@ -1,4 +1,4 @@
-local Sync = require("miuthought.sync")
+local Sync = require("pickthought.sync")
 
 local CH1_TEXT = "<html><body><p>春江潮水连海平,海上明月共潮生。</p></body></html>"
 local CH2_TEXT = "<html><body><p>滟滟随波千万里,何处春江无月明。</p></body></html>"
@@ -75,11 +75,11 @@ T.case("同步全流程", function()
     T.eq(report.dest, "/books/书.epub", "替换后 dest 就是原书路径")
     T.eq(report.backup, "/books/书.epub.orig", "备份路径")
     T.eq(calls.injected.src, "/books/书.epub", "首次从原书注入")
-    T.eq(calls.injected.dest, "/books/书.epub.miuthought-new", "注入到中间文件")
+    T.eq(calls.injected.dest, "/books/书.epub.pickthought-new", "注入到中间文件")
     T.eq(#calls.renames, 2, "两次换位")
     T.eq(calls.renames[1][1], "/books/书.epub", "原书让位")
     T.eq(calls.renames[1][2], "/books/书.epub.orig", "成为备份")
-    T.eq(calls.renames[2][1], "/books/书.epub.miuthought-new", "注入版")
+    T.eq(calls.renames[2][1], "/books/书.epub.pickthought-new", "注入版")
     T.eq(calls.renames[2][2], "/books/书.epub", "顶上原路径")
     T.eq(report.fetch_errors, 0, "无拉取错误")
     T.eq(report.total_underlines, 1, "拉取划线总数")
@@ -110,7 +110,7 @@ T.case("重同步从 .orig 干净备份注入", function()
 end)
 
 T.case("已注入但无备份时拒绝并说明", function()
-    local EpubInject = require("miuthought.epub_inject")
+    local EpubInject = require("pickthought.epub_inject")
     local deps = make_deps({
         load_meta = function()
             return {spine = {{href = "x"}}, has = {[EpubInject.MARKER] = true}}
@@ -171,7 +171,7 @@ end)
 T.case("映射缓存:续批只匹配新章节", function()
     local cache_file = "tests/.tmp_map_cache.json"
     os.remove(cache_file)
-    local U = require("miuthought.util")
+    local U = require("pickthought.util")
 
     local reads1 = 0
     local deps1 = make_deps({
@@ -202,7 +202,7 @@ T.case("映射缓存:续批只匹配新章节", function()
     T.eq(report2.chapters_matched, 1, "匹配章数一致")
 
     -- 算法版本变化必须让缓存整体作废,否则旧算法的失败结论永久生效
-    local ChapterMap = require("miuthought.chapter_map")
+    local ChapterMap = require("pickthought.chapter_map")
     local saved = ChapterMap.ALGO_VERSION
     ChapterMap.ALGO_VERSION = saved + 1
     local reads3 = 0

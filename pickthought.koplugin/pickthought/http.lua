@@ -3,10 +3,10 @@ local socketutil = require("socketutil")
 local ok_http, http = pcall(require, "socket.http")
 local ok_https, https = pcall(require, "ssl.https")
 local ok_socket, socket = pcall(require, "socket")
-local Json = require("miuthought.json")
-local Cookies = require("miuthought.cookies")
-local Protocol = require("miuthought.protocol")
-local Util = require("miuthought.util")
+local Json = require("pickthought.json")
+local Cookies = require("pickthought.cookies")
+local Protocol = require("pickthought.protocol")
+local Util = require("pickthought.util")
 local logger = require("logger")
 
 local Http = {}
@@ -59,7 +59,7 @@ function Http:_jar()
     if changed then
         auth.cookies = jar
         self.store:save_auth(auth)
-        logger.info("[MiuRead][HTTP] removed temporary cookies from saved login",
+        logger.info("[撷思][HTTP] removed temporary cookies from saved login",
             "names=", table.concat(Cookies.names(jar), ","))
     end
     return jar
@@ -162,7 +162,7 @@ function Http:request(opt)
         if not code and attempt > retries then
             error("network request failed: " .. tostring(err or "unknown"))
         end
-        logger.warn("[MiuRead][HTTP] retry", "attempt=", tostring(attempt), "url=", tostring(url or opt.url),
+        logger.warn("[撷思][HTTP] retry", "attempt=", tostring(attempt), "url=", tostring(url or opt.url),
             "status=", tostring(code or err or "network"))
         pause(math.min(2.5, 0.35 * (2 ^ (attempt - 1))))
     end
@@ -170,7 +170,7 @@ function Http:request(opt)
     error("network request failed: " .. tostring(last_error or "unknown"))
 end
 
-local AUTH_ERROR_MARKER = "[MiuReadAuth]"
+local AUTH_ERROR_MARKER = "[撷思Auth]"
 
 local function auth_error_message(code, message)
     local suffix = tostring(message or ""):gsub("[%c]+", " "):gsub("^%s+", ""):gsub("%s+$", "")
@@ -198,7 +198,7 @@ end
 
 local function auth_error_code(value)
     local text = tostring(value or "")
-    return text:match("%[MiuReadAuth%]%s+error_code=([^:%s]+)")
+    return text:match("%[撷思Auth%]%s+error_code=([^:%s]+)")
         or text:match("error_code=([%-]?%d+)")
 end
 

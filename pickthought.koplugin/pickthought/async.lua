@@ -1,6 +1,6 @@
 local FFIUtil=require("ffi/util")
-local Json=require("miuthought.json")
-local U=require("miuthought.util")
+local Json=require("pickthought.json")
+local U=require("pickthought.util")
 local UIManager=require("ui/uimanager")
 local Async={}; Async.__index=Async
 function Async:new(store, options)

@@ -1,6 +1,6 @@
-local Protocol = require("miuthought.protocol")
-local U = require("miuthought.util")
-local Http = require("miuthought.http")
+local Protocol = require("pickthought.protocol")
+local U = require("pickthought.util")
+local Http = require("pickthought.http")
 local logger = require("logger")
 
 local Api = {}
@@ -103,7 +103,7 @@ function Api:renew_session()
     end)
     self._renewing = false
     if ok then
-        logger.info("[MiuThought][Api] web session renewed")
+        logger.info("[撷思][Api] web session renewed")
         return true
     end
     return false, tostring(err)
@@ -139,7 +139,7 @@ function Api:call(name, params, request_options)
     local ok, data = pcall(request_once)
     if not ok and Http.is_auth_error(data) and self.reader then
         local recovered, recover_error = self.reader:_recover_login_session()
-        logger.warn("[MiuRead][API] authentication recovery",
+        logger.warn("[撷思][API] authentication recovery",
             "api=", tostring(name), "ok=", tostring(recovered),
             "error=", recovered and "" or tostring(recover_error))
         if recovered then ok, data = pcall(request_once) end

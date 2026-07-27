@@ -8,7 +8,7 @@
 -- 合并语义不放在本层(纯函数在 thoughts.merge_rows),ThoughtDB 只做
 -- open/close/put_chapter/put_range/get_range/delete_range/remove_db。
 local logger = require("logger")
-local U = require("miuthought.util")
+local U = require("pickthought.util")
 
 local ThoughtDB = {}
 
@@ -105,7 +105,7 @@ function ThoughtDB.put_chapter(db, chapter_uid, groups)
     end)
     if not ok then
         pcall(function() db:exec("ROLLBACK") end)
-        logger.warn("[MiuThought][ThoughtDB] put_chapter failed", tostring(err))
+        logger.warn("[撷思][ThoughtDB] put_chapter failed", tostring(err))
         return false
     end
     return true
@@ -125,7 +125,7 @@ function ThoughtDB.put_range(db, chapter_uid, range_str, texts)
     end)
     if not ok then
         pcall(function() db:exec("ROLLBACK") end)
-        logger.warn("[MiuThought][ThoughtDB] put_range failed", tostring(err))
+        logger.warn("[撷思][ThoughtDB] put_range failed", tostring(err))
         return false
     end
     return true

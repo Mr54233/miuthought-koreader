@@ -1,5 +1,5 @@
 local bit = require("bit")
-local D = require("miuthought.digests")
+local D = require("pickthought.digests")
 local P = {}
 P.USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0"
 P.SKILL_VERSION = "1.0.5"

@@ -1,5 +1,5 @@
 -- stubs 已由 tests/run.lua 最先 require,SQLite mock 通过 package.preload 注册。
-local ThoughtDB = require("miuthought.thought_db")
+local ThoughtDB = require("pickthought.thought_db")
 local SQ3 = require("lua-ljsqlite3/init")
 
 local function fresh_db()

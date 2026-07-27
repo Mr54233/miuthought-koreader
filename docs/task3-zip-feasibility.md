@@ -25,7 +25,7 @@ r:close()
 - 外部 `unzip` 二进制**不可依赖**:Android 没有系统 unzip(KOReader 惯例是把外部程序编进 APK 的
   nativeLibraryDir),Kobo 固件不确定,仅 Kindle 有把握。上游 2025-05 的 commit f63c76d(PR #13782)
   正是以"摆脱 unzip"为动机把 archiveviewer/readerui 全面迁移到 Archiver。
-  → 原 miuread `epub_style_repair_task.lua` 的 `os.execute("unzip ...")` 方案应弃用。
+  → 上游原版 `epub_style_repair_task.lua` 的 `os.execute("unzip ...")` 方案应弃用。
 
 ### 重打包
 
@@ -51,7 +51,7 @@ os.rename(path_tmp, path)
   解不了 zip 的 deflate 条目)。
 - **决策:插件要求 KOReader ≥ v2025.08,不做旧版 fallback**(旧版只剩外部 unzip 或自写纯 Lua
   inflate 两条烂路)。启动时 `pcall(require, "ffi/archiver")` 探测,失败给友好报错。
-- 原 miuread 纯 Lua zip 写入器(`.recovered/epub.lua` 的 `_stream_zip`)与上游已删除的
+- 上游原版 纯 Lua zip 写入器(`.recovered/epub.lua` 的 `_stream_zip`)与上游已删除的
   ffi/zipwriter 同思路,可随之退役。
 
 ### 子进程
@@ -65,7 +65,7 @@ repair task 的子进程 + 轮询骨架。
 | 状态 | 模块 | 说明 |
 |---|---|---|
 | 直接用(当前树) | annotations.lua 注入引擎 | tokenize/文本索引/locate_quote/inject 纯 Lua 离线可用;只需与微信 API 解耦(`fetch_chapter` 是网络侧,`apply/inject` 只吃数据表) |
-| 直接用(当前树) | thoughts / thought_popup / annotation_style / main.lua tap 拦截 | 锚点 `#miuthought-<hex>.<hex>.<hex>` + `miu-thought-mark` 虚线样式 + tap_link 拦截弹窗,链路完整 |
+| 直接用(当前树) | thoughts / thought_popup / annotation_style / main.lua tap 拦截 | 锚点 `#pickthought-<hex>.<hex>.<hex>` + `pickthought-mark` 虚线样式 + tap_link 拦截弹窗,链路完整 |
 | 直接用(当前树) | util.lua | repair task 依赖的 7 个函数(copy/file_exists/read_file/mkdir/atomic_write/remove_tree/shell_quote)全部健在 |
 | 改造复用 | epub_style_repair_task.lua | 子进程+轮询+超时+防休眠骨架保留;去掉 unzip(换 Archiver.Reader)、去掉备份/原地替换(Task 3 写副本,不动原书,反而更简单)、通用化对任意 EPUB 布局(解析 container.xml→OPF,不再假定 OEBPS/style.css) |
 | 不需要 | internal_links.lua / codec.lua / downloader.lua | 内链修复是针对重排章节文件名的场景,Task 3 原位注入不改结构;codec 是微信章节解密;downloader 是下载编排 |

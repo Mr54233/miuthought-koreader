@@ -1,4 +1,4 @@
-local EpubReader = require("miuthought.epub_reader")
+local EpubReader = require("pickthought.epub_reader")
 
 local CONTAINER = [[<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">

@@ -4,10 +4,10 @@ local QRMessage=require("ui/widget/qrmessage")
 local ButtonDialog=require("ui/widget/buttondialog")
 local InputDialog=require("ui/widget/inputdialog")
 local UIManager=require("ui/uimanager")
-local Cookies=require("miuthought.cookies")
-local Protocol=require("miuthought.protocol")
-local Text=require("miuthought.text")
-local Util=require("miuthought.util")
+local Cookies=require("pickthought.cookies")
+local Protocol=require("pickthought.protocol")
+local Text=require("pickthought.text")
+local Util=require("pickthought.util")
 local _=Text.tr
 local Auth={}; Auth.__index=Auth
 local BASE="https://weread.qq.com"
@@ -91,7 +91,7 @@ function Auth:_finish(data)
     end
     if api_key=="" then error("No WeRead Skill API key returned") end
     self.store:save_auth({api_key=api_key,cookies=jar,account={name=tostring(user.name or ""),vid=vid,logged_at=os.time()}})
-    logger.info("[MiuRead][Auth] stable cookies saved", "names=", table.concat(Cookies.names(jar), ","))
+    logger.info("[撷思][Auth] stable cookies saved", "names=", table.concat(Cookies.names(jar), ","))
     return user.name or vid
 end
 function Auth:_show_retry(message)
@@ -138,7 +138,7 @@ function Auth:_begin(refresh_count)
     self.started=os.time()
     self.active=true
     self.poll_failures=0
-    logger.info("[MiuRead][Auth] QR login started", "refresh=", tostring(self.refresh_count))
+    logger.info("[撷思][Auth] QR login started", "refresh=", tostring(self.refresh_count))
 
     if self.host.is_online and not self.host:is_online() then
         self:_show_retry("网络不可用，暂时无法获取登录二维码。")
@@ -148,7 +148,7 @@ function Auth:_begin(refresh_count)
         if gen~=self.generation or not self.active then return end
         local ok,uid=pcall(self._uid,self)
         if not ok then
-            logger.warn("[MiuRead][Auth] QR creation failed", tostring(uid):gsub("[%c]+"," "):sub(1,180))
+            logger.warn("[撷思][Auth] QR creation failed", tostring(uid):gsub("[%c]+"," "):sub(1,180))
             self:_show_retry("二维码获取失败："..Util.first_line(uid,120))
             return
         end
@@ -202,7 +202,7 @@ function Auth:_schedule(uid,gen,otp)
             end
             self.poll_failures=(self.poll_failures or 0)+1
             if self.poll_failures==1 or self.poll_failures%5==0 then
-                logger.warn("[MiuRead][Auth] login poll failed", tostring(data):gsub("[%c]+"," "):sub(1,180))
+                logger.warn("[撷思][Auth] login poll failed", tostring(data):gsub("[%c]+"," "):sub(1,180))
             end
             self:_schedule(uid,gen,otp); return
         end
@@ -211,7 +211,7 @@ function Auth:_schedule(uid,gen,otp)
             self.active=false; self:_close_dialog()
             self.host:online(_("QR login"),function()
                 local name=self:_finish(data)
-                logger.info("[MiuRead][Auth] QR login completed")
+                logger.info("[撷思][Auth] QR login completed")
                 self:cancel()
                 self.host:info(_("Logged in")..": "..tostring(name))
             end)

@@ -14,11 +14,11 @@
 --   inject(src, book_id, mapped_chapters, dest) → stats, err(epub_inject.inject_copy)
 --   progress(phase, i, n, text) → 返回 false 表示取消(可选)
 --   file_exists/rename/remove(可选,默认真实文件系统)
-local Binding = require("miuthought.binding")
-local ChapterMap = require("miuthought.chapter_map")
-local EpubInject = require("miuthought.epub_inject")
-local Json = require("miuthought.json")
-local U = require("miuthought.util")
+local Binding = require("pickthought.binding")
+local ChapterMap = require("pickthought.chapter_map")
+local EpubInject = require("pickthought.epub_inject")
+local Json = require("pickthought.json")
+local U = require("pickthought.util")
 
 local Sync = {}
 
@@ -253,7 +253,7 @@ function Sync.run(deps)
 
     if not step("inject", 0, 1) then return nil, "已取消" end
     -- 注入到中间文件(无 .epub 后缀,不会闪现在书架),成功后原子换位。
-    local temp_dest = doc_path .. ".miuthought-new"
+    local temp_dest = doc_path .. ".pickthought-new"
     local stats, inject_err = deps.inject(src, deps.book_id, mapped, temp_dest)
     if not stats then return nil, inject_err end
 

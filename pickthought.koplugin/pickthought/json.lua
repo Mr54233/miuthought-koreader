@@ -1,6 +1,6 @@
 local ok, engine = pcall(require, "json")
 if not ok then ok, engine = pcall(require, "rapidjson") end
-if not ok then error("MiuRead requires KOReader JSON support") end
+if not ok then error("撷思 requires KOReader JSON support") end
 local Json = {}
 function Json.encode(value)
     if engine.encode then return engine.encode(value) end

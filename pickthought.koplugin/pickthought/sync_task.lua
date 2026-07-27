@@ -1,12 +1,12 @@
--- 后台同步任务:改自原觅阅 download_task.lua(久经实测的子进程控制器)。
+-- 后台同步任务:改自原撷思 download_task.lua(久经实测的子进程控制器)。
 -- 子进程用隔离 Store 跑完整同步(拉取→缓存→映射→注入),经进度/结果/取消三个
 -- 文件与父进程通信;父进程轮询、防待机(preventStandby + Kindle T1 重置)、
 -- 判活(/proc 权威,waitpid 兜底)、支持 KOReader 重启后 attach 重新接管。
 -- 断点续传:每章拉取结果落盘 book_dir/sync-cache/,成功完成才清空;
 -- 中断/取消后再次同步自动跳过已拉取章节。
 local FFIUtil = require("ffi/util")
-local Json = require("miuthought.json")
-local U = require("miuthought.util")
+local Json = require("pickthought.json")
+local U = require("pickthought.util")
 local UIManager = require("ui/uimanager")
 local Device = require("device")
 local logger = require("logger")
@@ -142,7 +142,7 @@ function SyncTask:_reset_device_timeout()
     local powerd = Device and Device.powerd
     if powerd and type(powerd.resetT1Timeout) == "function" then
         local ok, err = pcall(powerd.resetT1Timeout, powerd)
-        if not ok then logger.warn("[MiuThought][SyncTask] Kindle T1 reset failed", tostring(err)) end
+        if not ok then logger.warn("[撷思][SyncTask] Kindle T1 reset failed", tostring(err)) end
         return ok
     end
     return false
@@ -158,9 +158,9 @@ function SyncTask:_hold_awake()
         -- (Kobo 等无 T1 的设备靠的就是这条)。
         pcall(function() require("pluginshare").pause_auto_suspend = true end)
         local reset = self:_reset_device_timeout()
-        logger.info("[MiuThought][SyncTask] standby lock acquired", "t1_reset=", tostring(reset))
+        logger.info("[撷思][SyncTask] standby lock acquired", "t1_reset=", tostring(reset))
     else
-        logger.warn("[MiuThought][SyncTask] standby lock failed", tostring(err))
+        logger.warn("[撷思][SyncTask] standby lock failed", tostring(err))
     end
 end
 
@@ -169,7 +169,7 @@ function SyncTask:_release_awake()
     self.standby_held = false
     pcall(function() UIManager:allowStandby() end)
     pcall(function() require("pluginshare").pause_auto_suspend = false end)
-    logger.info("[MiuThought][SyncTask] standby lock released")
+    logger.info("[撷思][SyncTask] standby lock released")
 end
 
 function SyncTask:available()
@@ -201,7 +201,7 @@ function SyncTask:_read_progress(job)
     if ok and type(state) == "table" then
         if job.task_token and tostring(state.task_token or "")~=tostring(job.task_token) then
             job.token_mismatch=true
-            logger.warn("[MiuThought][SyncTask] progress task identity mismatch")
+            logger.warn("[撷思][SyncTask] progress task identity mismatch")
             return false
         end
         job.last_progress_raw = raw
@@ -242,7 +242,7 @@ function SyncTask:_poll()
     local job = self.job
     if not job then return end
     if not self:_owns_job() then
-        logger.info("[MiuThought][SyncTask] controller ownership transferred","pid=",tostring(job.pid))
+        logger.info("[撷思][SyncTask] controller ownership transferred","pid=",tostring(job.pid))
         self.job=nil
         self:_release_awake()
         return
@@ -260,7 +260,7 @@ function SyncTask:_poll()
     -- 冻结,墙钟静默对子进程不公平;重置活动基线,给它完整的恢复窗口,
     -- 否则唤醒后首轮 poll 会误杀健康的子进程。
     if job.last_poll_at and now-job.last_poll_at>30 then
-        logger.info("[MiuThought][SyncTask] wakeup detected, resetting idle baseline",
+        logger.info("[撷思][SyncTask] wakeup detected, resetting idle baseline",
             "gap=",tostring(now-job.last_poll_at))
         job.last_progress_at=now
         job.waiting_notified=false
@@ -274,7 +274,7 @@ function SyncTask:_poll()
     local alive=process_exists(job.pid)
     local done_ok,done=pcall(FFIUtil.isSubProcessDone,job.pid,false)
     if not done_ok then
-        logger.warn("[MiuThought][SyncTask] poll failed",tostring(done))
+        logger.warn("[撷思][SyncTask] poll failed",tostring(done))
         if alive~=false then self:_schedule(); return end
     end
 
@@ -288,7 +288,7 @@ function SyncTask:_poll()
             else
                 -- 杀不死(极端情况):保留 cancel 文件让子进程在下个边界自行退出,
                 -- 继续轮询,绝不在进程仍活着时谎报「已取消」并删信号文件。
-                logger.warn("[MiuThought][SyncTask] terminate unverified, keep polling","pid=",tostring(job.pid))
+                logger.warn("[撷思][SyncTask] terminate unverified, keep polling","pid=",tostring(job.pid))
                 self:_schedule()
             end
             return
@@ -312,7 +312,7 @@ function SyncTask:_poll()
         end
         if idle>=300 and self.standby_held then
             self:_release_awake()
-            logger.info("[MiuThought][SyncTask] standby lock released while waiting", "pid=", tostring(job.pid))
+            logger.info("[撷思][SyncTask] standby lock released while waiting", "pid=", tostring(job.pid))
         end
         -- 看门狗:子进程心跳很密(章节/想法批次/注入条目都会发),清醒状态下
         -- 静默 6 分钟远超单次请求最坏重试周期,只能是 DNS 无超时之类的死吊——
@@ -322,7 +322,7 @@ function SyncTask:_poll()
             if self:_terminate(job.pid) then
                 self:_finish(job,"同步长时间无响应,已中止;已拉取章节保存在断点缓存,再次同步会继续。")
             else
-                logger.warn("[MiuThought][SyncTask] watchdog terminate unverified, keep polling","pid=",tostring(job.pid))
+                logger.warn("[撷思][SyncTask] watchdog terminate unverified, keep polling","pid=",tostring(job.pid))
                 U.atomic_write(job.cancel_path,"1",true)
                 self:_schedule()
             end
@@ -376,7 +376,7 @@ function SyncTask:attach(descriptor,on_progress,on_done)
     end
     self:_claim(pid)
     self:_hold_awake()
-    logger.info("[MiuThought][SyncTask] attached","pid=",tostring(pid),
+    logger.info("[撷思][SyncTask] attached","pid=",tostring(pid),
         "done=",tostring(done_ok and done or "unknown"),"alive=",tostring(alive))
     if file_exists(self.job.result_path) then
         local attached_job=self.job
@@ -417,16 +417,16 @@ function SyncTask:start(task, on_progress, on_done)
 
     local child = function()
         lower_worker_priority()
-        local Store = require("miuthought.store")
-        local Http = require("miuthought.http")
-        local Api = require("miuthought.api")
-        local WebFetch = require("miuthought.web_fetch")
-        local Sync = require("miuthought.sync")
-        local EpubReader = require("miuthought.epub_reader")
-        local EpubInject = require("miuthought.epub_inject")
-        local Thoughts = require("miuthought.thoughts")
-        local JsonChild = require("miuthought.json")
-        local UChild = require("miuthought.util")
+        local Store = require("pickthought.store")
+        local Http = require("pickthought.http")
+        local Api = require("pickthought.api")
+        local WebFetch = require("pickthought.web_fetch")
+        local Sync = require("pickthought.sync")
+        local EpubReader = require("pickthought.epub_reader")
+        local EpubInject = require("pickthought.epub_inject")
+        local Thoughts = require("pickthought.thoughts")
+        local JsonChild = require("pickthought.json")
+        local UChild = require("pickthought.util")
         local LoggerChild = require("logger")
 
         local function emit(state)
@@ -560,8 +560,8 @@ function SyncTask:start(task, on_progress, on_done)
             if book_dir_path then
                 for _, file in ipairs(UChild.list(book_dir_path)) do
                     if file ~= doc_path and file:find(doc_path, 1, true) == 1
-                        and (file:find(".miuthought-new", #doc_path + 1, true)
-                            or file:find(".觅想.epub.tmp", #doc_path + 1, true)) then
+                        and (file:find(".pickthought-new", #doc_path + 1, true)
+                            or file:find(".撷思.epub.tmp", #doc_path + 1, true)) then
                         os.remove(file)
                     end
                 end
@@ -643,7 +643,7 @@ function SyncTask:start(task, on_progress, on_done)
             }
         else
             local raw_error = tostring(value)
-            LoggerChild.warn("[MiuThought][SyncTask] child failed", raw_error)
+            LoggerChild.warn("[撷思][SyncTask] child failed", raw_error)
             local display_error = raw_error:match("^(.-)\nstack traceback:") or raw_error
             display_error = display_error:gsub("^.-%.lua:%d+:%s*", "")
             if raw_error:lower():find("not enough memory", 1, true) then
@@ -684,7 +684,7 @@ function SyncTask:start(task, on_progress, on_done)
     self:_claim(pid)
     self.backgrounded = false
     self:_hold_awake()
-    logger.info("[MiuThought][SyncTask] started", "pid=", tostring(pid))
+    logger.info("[撷思][SyncTask] started", "pid=", tostring(pid))
     self:_schedule()
     return true
 end

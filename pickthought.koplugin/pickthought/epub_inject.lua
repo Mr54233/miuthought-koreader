@@ -1,17 +1,17 @@
--- 注入编排:本地 EPUB + 想法数据 → 觅想版副本。
+-- 注入编排:本地 EPUB + 想法数据 → 撷思版副本。
 -- 原书只读;副本先写 dest..".tmp" 再 rename。zip 读写只走 ffi/archiver。
 --
 -- chapters 契约(Task 5/6 供数):数组,每项
 --   {chapter_uid=..., href=...(zip 全路径/相对 OPF 路径/纯文件名,依次精确、resolve、后缀匹配),
 --    underlines={{range="a-b", markText=...}, ...}, review_map={[range]={{content,author,...}}}}
-local Annotations = require("miuthought.annotations")
-local AnnotationStyle = require("miuthought.annotation_style")
-local EpubReader = require("miuthought.epub_reader")
-local Json = require("miuthought.json")
+local Annotations = require("pickthought.annotations")
+local AnnotationStyle = require("pickthought.annotation_style")
+local EpubReader = require("pickthought.epub_reader")
+local Json = require("pickthought.json")
 
 local M = {}
 
-M.MARKER = "miuthought.json"
+M.MARKER = "pickthought.json"
 
 -- 无 DRM 书也常带 encryption.xml 做字体混淆,这两种算法不影响注入,放行。
 local FONT_OBFUSCATION_ALGOS = {
@@ -29,7 +29,7 @@ local STORED_EXTS = {
 function M.copy_path(src)
     src = tostring(src or "")
     local stem = src:match("^(.*)%.[eE][pP][uU][bB]$") or src
-    return stem .. ".觅想.epub"
+    return stem .. ".撷思.epub"
 end
 
 function M.is_copy(path, archiver)
@@ -111,7 +111,7 @@ local function count_occurrences(text, needle)
     end
 end
 
--- 实际落进正文的锚点数:按划线 range 逐个对比注入前后 data-miu-range 的出现次数。
+-- 实际落进正文的锚点数:按划线 range 逐个对比注入前后 data-pickthought-range 的出现次数。
 -- (annotations 的 dropped 不含去重叠环节丢弃的划线,直接数结果才准;
 -- 同一文件叠加多章时按出现次数差对比,跨章同 range 键也不误判。)
 -- 第二返回值:落锚的 range 键集合,供跨文件聚合「唯一划线」的着落。
@@ -121,7 +121,7 @@ local function count_marks(rendered, underlines, base)
         local key = range_of(row)
         if key ~= "" and not seen[key] then
             seen[key] = true
-            local needle = 'data-miu-range="' .. key .. '"'
+            local needle = 'data-pickthought-range="' .. key .. '"'
             if count_occurrences(rendered, needle) > (base and count_occurrences(base, needle) or 0) then
                 n = n + 1
                 hit[key] = true
@@ -157,7 +157,7 @@ function M.inject_copy(src, book_id, chapters, opts)
 
     local meta, err = EpubReader.load(src, opts.archiver)
     if not meta then return nil, err end
-    if meta.has[M.MARKER] then return nil, "该文件已是觅想版副本,请对原书执行注入" end
+    if meta.has[M.MARKER] then return nil, "该文件已是撷思版副本,请对原书执行注入" end
     if drm_blocked(meta, opts.archiver) then return nil, "该 EPUB 受 DRM 保护,无法注入想法" end
 
     -- 预归组:这里只做 href 匹配,把章节按目标文件分组;正文读取与划线定位

@@ -6,24 +6,24 @@ local Menu=require("ui/widget/menu")
 local UIManager=require("ui/uimanager")
 local WidgetContainer=require("ui/widget/container/widgetcontainer")
 local logger=require("logger")
-local Config=require("miuthought.config")
-local Text=require("miuthought.text")
-local U=require("miuthought.util")
-local Store=require("miuthought.store")
-local Http=require("miuthought.http")
-local Api=require("miuthought.api")
-local Auth=require("miuthought.auth")
-local Annotations=require("miuthought.annotations")
-local Updater=require("miuthought.updater")
-local Cookies=require("miuthought.cookies")
-local Thoughts=require("miuthought.thoughts")
-local Binding=require("miuthought.binding")
-local SyncTask=require("miuthought.sync_task")
-local SyncProgress=require("miuthought.sync_progress")
+local Config=require("pickthought.config")
+local Text=require("pickthought.text")
+local U=require("pickthought.util")
+local Store=require("pickthought.store")
+local Http=require("pickthought.http")
+local Api=require("pickthought.api")
+local Auth=require("pickthought.auth")
+local Annotations=require("pickthought.annotations")
+local Updater=require("pickthought.updater")
+local Cookies=require("pickthought.cookies")
+local Thoughts=require("pickthought.thoughts")
+local Binding=require("pickthought.binding")
+local SyncTask=require("pickthought.sync_task")
+local SyncProgress=require("pickthought.sync_progress")
 local _=Text.tr
 local unpack_args=unpack or table.unpack
 local source=debug.getinfo(1,"S").source:gsub("^@",""); local ROOT=source:match("^(.*)/main%.lua$") or "."
-local Plugin=WidgetContainer:extend{name="miuthought",is_doc_only=false,version=Config.VERSION}
+local Plugin=WidgetContainer:extend{name="pickthought",is_doc_only=false,version=Config.VERSION}
 
 local function sanitize_saved_auth(store)
     local auth=store:auth()
@@ -31,7 +31,7 @@ local function sanitize_saved_auth(store)
     if changed then
         auth.cookies=cleaned
         store:save_auth(auth)
-        logger.info("[MiuThought][Auth] startup cookie cleanup",
+        logger.info("[撷思][Auth] startup cookie cleanup",
             "names=",table.concat(Cookies.names(cleaned),","))
     end
 end
@@ -39,7 +39,7 @@ end
 function Plugin:init()
     math.randomseed(os.time()+math.floor(collectgarbage("count")))
     self.store=Store:new()
-    logger.info("[MiuThought] initialized", "version=", tostring(Config.VERSION),
+    logger.info("[撷思] initialized", "version=", tostring(Config.VERSION),
         "schema=", tostring(Config.SCHEMA), "root=", tostring(ROOT))
     sanitize_saved_auth(self.store)
     self.http=Http:new(self.store)
@@ -55,12 +55,12 @@ function Plugin:init()
     if state=="updated" then UIManager:scheduleIn(1,function() self:toast(_("Update installed"),3) end) end
 end
 
-function Plugin:onDispatcherRegisterActions() Dispatcher:registerAction("miuthought_show",{category="none",event="ShowMiuThought",title=Config.NAME,filemanager=true,reader=true}) end
-function Plugin:addToMainMenu(items) items.miuthought={text=Config.NAME,sorting_hint="tools",sub_item_table_func=function() return self.ui.document and self:reader_menu() or self:home_menu() end} end
+function Plugin:onDispatcherRegisterActions() Dispatcher:registerAction("pickthought_show",{category="none",event="Show撷思",title=Config.NAME,filemanager=true,reader=true}) end
+function Plugin:addToMainMenu(items) items.pickthought={text=Config.NAME,sorting_hint="tools",sub_item_table_func=function() return self.ui.document and self:reader_menu() or self:home_menu() end} end
 
 function Plugin:info(t) UIManager:show(InfoMessage:new{text=tostring(t or "")}) end
 function Plugin:toast(t,s) UIManager:show(InfoMessage:new{text=tostring(t or ""),timeout=s or 2}) end
-function Plugin:safe(label,fn) return function(...) local a={...}; local ok,e=xpcall(function() return fn(unpack_args(a)) end,debug.traceback); if not ok then logger.err("[MiuThought]",label,e); self:info(_("Operation failed")..":\n"..U.first_line(e)) end end end
+function Plugin:safe(label,fn) return function(...) local a={...}; local ok,e=xpcall(function() return fn(unpack_args(a)) end,debug.traceback); if not ok then logger.err("[撷思]",label,e); self:info(_("Operation failed")..":\n"..U.first_line(e)) end end end
 function Plugin:is_online() local ok,N=pcall(require,"ui/network/manager"); if not ok or not N or not N.isOnline then return true end; local g,v=pcall(N.isOnline,N); return not g or v==true end
 function Plugin:online(label,fn) if not self:is_online() then self:info(_("Network unavailable")); return end; UIManager:scheduleIn(.05,self:safe(label,fn)) end
 function Plugin:list(title,items,empty)
@@ -152,8 +152,8 @@ function Plugin:pick_book(title,on_pick)
             -- 同步流程内部又推了一拍)。统一连推两拍,等重绘全部落地。
             UIManager:nextTick(function()
                 UIManager:nextTick(function()
-                    if tostring(path):lower():find(".觅想.epub",1,true) then
-                        self:info("这是觅想版副本,请选择原书")
+                    if tostring(path):lower():find(".撷思.epub",1,true) then
+                        self:info("这是撷思版副本,请选择原书")
                         return
                     end
                     on_pick(path)
@@ -351,10 +351,10 @@ function Plugin:check_update()
 end
 
 function Plugin:show_about()
-    self:info(Config.NAME.." "..self.version.."\n\n觅想 MiuThought\n只同步微信读书划线与想法到本地 EPUB 副本\n\n".._("Unofficial client").."\n\n".._("This build has not been verified with every Kindle model or every WeRead book."))
+    self:info(Config.NAME.." "..self.version.."\n\n撷思 撷思\n只同步微信读书划线与想法到本地 EPUB 副本\n\n".._("Unofficial client").."\n\n".._("This build has not been verified with every Kindle model or every WeRead book."))
 end
 
-function Plugin:onShowMiuThought()
+function Plugin:onShow撷思()
     local items=self.ui.document and self:reader_menu() or self:home_menu()
     self:list(Config.NAME,items)
 end
@@ -375,7 +375,7 @@ function Plugin:sync_entry(path,mode,opts)
     if self.sync_task and self.sync_task:busy() then self:_show_active_sync_dialog() return end
     if not tostring(path or ""):lower():match("%.epub$") then self:info("只支持 EPUB 格式的本地书") return end
     if not self:require_login() then return end
-    local EpubReader=require("miuthought.epub_reader")
+    local EpubReader=require("pickthought.epub_reader")
     local available,gate_err=EpubReader.available()
     if not available then self:info(tostring(gate_err)) return end
     if mode~="reinject" and not self:is_online() then self:info(_("Network unavailable")) return end
@@ -416,7 +416,7 @@ function Plugin:_sync_state(book_id)
     local raw=U.read_file(self.store:book_cache_path(book_id).."/sync-cache/state.json",true)
     local state=nil
     if raw then
-        local ok,decoded=pcall(function() return require("miuthought.json").decode(raw) end)
+        local ok,decoded=pcall(function() return require("pickthought.json").decode(raw) end)
         if ok and type(decoded)=="table" then state=decoded end
     end
     self._sync_state_cache={book_id=tostring(book_id),at=now,state=state}
@@ -442,7 +442,7 @@ function Plugin:_start_sync_task(path,bound,mode,opts)
         function(state) self:_on_sync_progress(runtime,state) end,
         function(result) self:_finish_sync(runtime,result) end)
     if not ok then
-        if opts.silent then logger.warn("[MiuThought][Sync] auto batch start failed",tostring(err))
+        if opts.silent then logger.warn("[撷思][Sync] auto batch start failed",tostring(err))
         else self:info("无法启动后台同步:\n"..tostring(err)) end
         return
     end
@@ -606,12 +606,12 @@ function Plugin:_recover_sync_state()
         function(result) self:_finish_sync(runtime,result) end)
     if ok then
         self.sync_task:set_backgrounded(true)
-        logger.info("[MiuThought][Sync] 后台同步已接管","pid=",tostring(state.task.pid))
+        logger.info("[撷思][Sync] 后台同步已接管","pid=",tostring(state.task.pid))
         return
     end
     self._sync_runtime=nil
     self:_clear_sync_state()
-    logger.info("[MiuThought][Sync] 上次同步已中断",tostring(err))
+    logger.info("[撷思][Sync] 上次同步已中断",tostring(err))
     UIManager:scheduleIn(1.5,function()
         self:toast("上次同步已中断,断点已保留;再次同步会继续",4)
     end)
@@ -624,10 +624,10 @@ end
 
 function Plugin:_sync_run(path,bound)
     local Trapper=require("ui/trapper")
-    local Sync=require("miuthought.sync")
-    local EpubReader=require("miuthought.epub_reader")
-    local EpubInject=require("miuthought.epub_inject")
-    local WebFetch=require("miuthought.web_fetch")
+    local Sync=require("pickthought.sync")
+    local EpubReader=require("pickthought.epub_reader")
+    local EpubInject=require("pickthought.epub_inject")
+    local WebFetch=require("pickthought.web_fetch")
     if not Trapper:info("正在读取本地书…") then return end
     -- Sync.run 内部对 api/fetch 已 pcall,但 ChapterMap/EpubReader 的意外异常
     -- 会死在协程里(Trapper 只记日志),必须在这里收敛成用户可见的失败。
@@ -661,7 +661,7 @@ function Plugin:_sync_run(path,bound)
     end,debug.traceback)
     Trapper:clear()
     if not ok then
-        logger.err("[MiuThought][Sync] unexpected error",tostring(report))
+        logger.err("[撷思][Sync] unexpected error",tostring(report))
         self:_sync_fail("同步失败:\n"..U.first_line(report,220))
         return
     end
@@ -698,7 +698,7 @@ function Plugin:_sync_report(report)
     if (report.save_failures or 0)>0 then
         lines[#lines+1]=string.format("有 %d 章想法没存上(检查存储空间)",report.save_failures)
     end
-    logger.info("[MiuThought][Sync] report",
+    logger.info("[撷思][Sync] report",
         "chapters=",tostring(report.chapters_with_data),"/",tostring(report.chapters_total),
         "matched=",tostring(report.chapters_matched),
         "marks=",tostring(report.marks),"aligned=",tostring(report.quote_aligned),
@@ -747,7 +747,7 @@ end
 -- ===== 想法弹窗体系（点击 EPUB 锚点 → 弹窗）=====
 local function extract_thought_href(value,seen,depth)
     if depth>4 or value==nil then return nil end
-    if type(value)=="string" then return value:match("(#?miuxiang%-[%x%.]+)") end
+    if type(value)=="string" then return value:match("(#?pickthought%-[%x%.]+)") end
     if type(value)~="table" then return nil end
     seen=seen or {}; if seen[value] then return nil end; seen[value]=true
     for _,key in ipairs({"href","url","target","link","uri","dest","destination"}) do local found=extract_thought_href(value[key],seen,depth+1); if found then return found end end
@@ -755,7 +755,7 @@ local function extract_thought_href(value,seen,depth)
 end
 
 function Plugin:_teardown_thought_tap()
-    if self._thought_tap_setup and self.ui and self.ui.unRegisterTouchZones then pcall(function() self.ui:unRegisterTouchZones({{id="miuthought_thought_popup",overrides={"tap_link"}}}) end) end
+    if self._thought_tap_setup and self.ui and self.ui.unRegisterTouchZones then pcall(function() self.ui:unRegisterTouchZones({{id="pickthought_thought_popup",overrides={"tap_link"}}}) end) end
     self._thought_tap_setup=nil
 end
 
@@ -836,14 +836,14 @@ function Plugin:_show_thought_href(href)
             height=math.floor(Screen:getHeight()*(tonumber(prefs.height_ratio) or 0.60)),
             add_nav_bar=true,
         })
-        logger.info("[MiuThought][ThoughtPopup] opened",
+        logger.info("[撷思][ThoughtPopup] opened",
             "book=",tostring(info.book_id),"chapter=",tostring(info.chapter_uid),
             "comments=",tostring(#(group.texts or {})),
             "elapsed_ms=",tostring(math.floor((os.clock()-started)*1000+.5)))
     end,debug.traceback)
     self._thought_popup_busy=false
     if not ok then
-        logger.err("[MiuThought][ThoughtPopup] open failed",tostring(unexpected))
+        logger.err("[撷思][ThoughtPopup] open failed",tostring(unexpected))
         self:info("想法弹窗打开失败：\n"..U.first_line(unexpected,220))
     end
     return true
@@ -859,7 +859,7 @@ end
 function Plugin:_setup_thought_tap()
     if self._thought_tap_setup or not self.ui or not self.ui.registerTouchZones then return end
     local ok,Device=pcall(require,"device"); if ok and Device.isTouchDevice and not Device:isTouchDevice() then return end
-    self.ui:registerTouchZones({{id="miuthought_thought_popup",ges="tap",screen_zone={ratio_x=0,ratio_y=0,ratio_w=1,ratio_h=1},overrides={"tap_link"},handler=function(ges) return self:_on_thought_tap(ges) end}})
+    self.ui:registerTouchZones({{id="pickthought_thought_popup",ges="tap",screen_zone={ratio_x=0,ratio_y=0,ratio_w=1,ratio_h=1},overrides={"tap_link"},handler=function(ges) return self:_on_thought_tap(ges) end}})
     self._thought_tap_setup=true
 end
 
