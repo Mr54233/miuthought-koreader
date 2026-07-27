@@ -225,4 +225,91 @@ end
 
 function M.written(writer) return writer.entries end
 
+-- 内存版 lua-ljsqlite3:与 KOReader 内建 ljsqlite3 的 prepare/exec/step 语义一致
+-- (真实现见 koreader-base ffi/lua-ljsqlite3/init.lua)。
+-- 每个 path 一个内存库 {rows={}, schema=false};prepare 返回的 stmt 支持
+-- reset():bind(...):step() 链式调用。只覆盖 thought_db 用到的几条模板:
+-- CREATE/DROP/BEGIN/COMMIT/ROLLBACK(exec)、DELETE WHERE / INSERT / SELECT。
+-- _last_path 供测试断言路径。
+package.preload["lua-ljsqlite3/init"] = function()
+    local SQ3 = { _stores = {}, _last_path = nil }
+
+    local function store_of(path)
+        local s = SQ3._stores[path]
+        if not s then s = { rows = {}, schema = false }; SQ3._stores[path] = s end
+        return s
+    end
+
+    -- stmt 的 step 按 sql 模板分发;reset 清 binds 与游标。
+    local function make_stmt(store, sql)
+        local stmt = { _sql = sql, _binds = {}, _cursor = nil, _done = false }
+        function stmt:reset() stmt._binds = {}; stmt._cursor = nil; stmt._done = false; return stmt end
+        function stmt:bind(...) stmt._binds = { ... }; return stmt end
+        function stmt:step()
+            local sql, b = stmt._sql, stmt._binds
+            if sql:find("INSERT") then
+                store.rows[#store.rows + 1] = {
+                    chapter_uid = b[1], range = b[2], item_index = b[3],
+                    abstract = b[4], author = b[5], content = b[6],
+                    likes = b[7], review_id = b[8],
+                }
+                return nil
+            elseif sql:find("DELETE") then
+                if stmt._done then return nil end
+                stmt._done = true
+                local uid, rng = b[1], b[2]
+                local kept = {}
+                for _, r in ipairs(store.rows) do
+                    local match = (r.chapter_uid == uid)
+                    if rng then match = match and (r.range == rng) end
+                    if not match then kept[#kept + 1] = r end
+                end
+                store.rows = kept
+                return nil
+            elseif sql:find("SELECT") then
+                if not stmt._cursor then
+                    local uid, rng = b[1], b[2]
+                    local matched = {}
+                    for _, r in ipairs(store.rows) do
+                        if r.chapter_uid == uid and (not rng or r.range == rng) then
+                            matched[#matched + 1] = r
+                        end
+                    end
+                    table.sort(matched, function(x, y) return x.item_index < y.item_index end)
+                    stmt._cursor = { rows = matched, pos = 0 }
+                end
+                stmt._cursor.pos = stmt._cursor.pos + 1
+                local r = stmt._cursor.rows[stmt._cursor.pos]
+                if not r then return nil end
+                -- SELECT 顺序:abstract, author, content, likes, review_id
+                return { r.abstract, r.author, r.content, r.likes, r.review_id }
+            end
+            return nil
+        end
+        function stmt:close() end
+        return stmt
+    end
+
+    function SQ3.open(path)
+        SQ3._last_path = path
+        local store = store_of(path)
+        local db = {}
+        function db:exec(sql)
+            sql = tostring(sql or "")
+            if sql:find("CREATE TABLE") then store.schema = true
+            elseif sql:find("DROP TABLE") then store.schema = false; store.rows = {}
+            end
+            -- PRAGMA / BEGIN / COMMIT / ROLLBACK:无操作语义,放行。
+            return true
+        end
+        function db:prepare(sql) return make_stmt(store, sql) end
+        function db:close() return true end
+        return db
+    end
+
+    -- 测试辅助:重置所有内存库(每个 case 之间清状态)。
+    function SQ3._reset() SQ3._stores = {}; SQ3._last_path = nil end
+    return SQ3
+end
+
 return M
