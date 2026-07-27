@@ -1,5 +1,5 @@
 local C = {
-    NAME = "撷思 · 微信读书想法同步",
+    NAME = "撷思",
     VERSION = "0.1.0",
     SCHEMA = 1,
     PLUGIN_DIR = "pickthought.koplugin",
