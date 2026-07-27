@@ -52,7 +52,7 @@
 
 ## 环境要求
 
-- **KOReader ≥ v2025.08**(硬性,不做旧版 fallback)。EPUB 的解包与重打包依赖该版本起内建的 `ffi/archiver`(libarchive 的 FFI 封装);SQLite 依赖内建的 `lua-ljsqlite3`。更早版本会提示缺少依赖而无法使用。技术依据见 [docs/task3-zip-feasibility.md](docs/task3-zip-feasibility.md)。
+- **KOReader ≥ v2025.08**(硬性,不做旧版 fallback)。EPUB 的解包与重打包依赖该版本起内建的 `ffi/archiver`(libarchive 的 FFI 封装);SQLite 依赖内建的 `lua-ljsqlite3`。更早版本会提示缺少依赖而无法使用。
 - 主要在 Kindle 上开发测试;其他 KOReader 平台(Kobo/Android 等)依赖均为 KOReader 内建,理论可用但未完整验证。
 
 ## 安装与使用
