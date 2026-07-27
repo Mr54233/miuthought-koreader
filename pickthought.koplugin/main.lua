@@ -332,22 +332,48 @@ function Plugin:update_about_menu()
 end
 
 function Plugin:check_update()
-    self:online("update",function()
+    if not self:is_online() then self:info(_("Network unavailable")); return end
+    local Trapper=require("ui/trapper")
+    Trapper:wrap(function()
+        if not Trapper:info("正在检查更新…") then return end
         local m,e=self.updater:check()
-        if not m then self:info("检查更新失败：\n"..tostring(e)); return end
+        Trapper:clear()
+        if not m then self:_update_fail("检查更新失败：\n"..tostring(e or "未知错误")); return end
         if m.current then self:info("当前已是最新版本\n\n当前版本："..tostring(self.version)); return end
         local text="发现新版本："..tostring(m.version)
         if m.name and tostring(m.name)~="" then text=text.."\n"..tostring(m.name) end
         if m.notes and tostring(m.notes)~="" then text=text.."\n\n更新说明：\n"..tostring(m.notes) end
         text=text.."\n\n是否下载并安装？"
-        UIManager:show(ConfirmBox:new{text=text,ok_text="下载并安装",ok_callback=function()
-            self:online("install",function()
-                local path=self.updater:download(m)
-                local ok,er=self.updater:install(path,m)
-                if ok then self:info("更新已安装\n\n请完全退出并重新启动 KOReader。") else self:info("更新失败：\n"..tostring(er)) end
-            end)
-        end})
+        -- 推迟到协程外弹 ConfirmBox:Trapper 退出 + 菜单关闭各排一次重绘,
+        -- 同步弹的窗口会被顶掉(和文管选书操作面板同一类时序 bug)。
+        UIManager:nextTick(function()
+            UIManager:show(ConfirmBox:new{text=text,ok_text="下载并安装",
+                ok_callback=function() self:_do_update(m) end})
+        end)
     end)
+end
+
+function Plugin:_do_update(m)
+    local Trapper=require("ui/trapper")
+    Trapper:wrap(function()
+        if not Trapper:info("正在下载更新…\n(可能需要一点时间)") then return end
+        local path
+        local ok_dl,err=pcall(function() path=self.updater:download(m) end)
+        if not ok_dl or not path then
+            Trapper:clear()
+            self:_update_fail("下载失败：\n"..tostring(err or "未知错误"))
+            return
+        end
+        if not Trapper:info("正在安装更新…") then return end
+        local ok_inst,er=self.updater:install(path,m)
+        Trapper:clear()
+        if ok_inst then self:info("更新已安装\n\n请完全退出并重新启动 KOReader。")
+        else self:_update_fail("安装失败：\n"..tostring(er)) end
+    end)
+end
+
+function Plugin:_update_fail(text)
+    UIManager:show(InfoMessage:new{text=tostring(text or ""),flush_events_on_show=true})
 end
 
 function Plugin:show_about()
@@ -728,17 +754,22 @@ function Plugin:restore_original(path)
     end
     local backup=path..".orig"
     if not U.file_exists(backup) then self:info("没有找到原书备份("..backup..")") return end
-    -- 书正开着时替换文件,阅读器缓存会失效,需要用户重开;文管里还原则无感。
+    -- 书正开着时,reloadDocument 会自动重载原版;文管里还原则下次打开即原版。
     local is_open=path==self:current_doc_path()
     UIManager:show(ConfirmBox:new{
-        text="将用原书备份覆盖当前划线版,书内注入的划线与想法会移除(想法缓存保留)。"
-            ..(is_open and "\n还原后请重新打开本书。" or ""),
+        text="将用原书备份覆盖当前划线版,书内注入的划线与想法会移除(想法缓存保留)。",
         ok_text="还原原书",
         ok_callback=function()
             os.remove(path)
             local ok,err=os.rename(backup,path)
-            if ok then self:toast(is_open and "已还原原书,请重新打开本书" or "已还原原书",3)
-            else self:info("还原失败:\n"..tostring(err or "重命名失败")) end
+            if not ok then self:info("还原失败:\n"..tostring(err or "重命名失败")); return end
+            if is_open and self.ui and type(self.ui.reloadDocument)=="function" then
+                -- 自动重载:丢弃注入版缓存,重读已替换的原版文件,免得用户手动关闭再开。
+                local reload_ok=pcall(function() self.ui:reloadDocument(nil, true) end)
+                self:toast(reload_ok and "已还原原书" or "已还原原书,请重新打开本书",3)
+            else
+                self:toast("已还原原书",3)
+            end
         end,
         cancel_text="取消",
     })
