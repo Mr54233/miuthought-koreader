@@ -17,7 +17,6 @@ local Annotations=require("miuthought.annotations")
 local Updater=require("miuthought.updater")
 local Cookies=require("miuthought.cookies")
 local Thoughts=require("miuthought.thoughts")
-local ThoughtPopup=require("miuthought.thought_popup")
 local Binding=require("miuthought.binding")
 local SyncTask=require("miuthought.sync_task")
 local SyncProgress=require("miuthought.sync_progress")
@@ -762,6 +761,10 @@ end
 
 function Plugin:_thought_font_size(level)
     local Device=require("device")
+    return Device.screen:scaleBySize(self:_thought_font_pt(level))
+end
+
+function Plugin:_thought_font_pt(level)
     local doc=self.ui and self.ui.document
     local configurable=doc and doc.configurable or {}
     local candidates={
@@ -781,7 +784,7 @@ function Plugin:_thought_font_size(level)
     base=math.max(14,math.min(48,base or 22))
     local factors={standard=0.86,large=1.00,xlarge=1.15}
     local factor=factors[tostring(level or "standard")] or 1
-    return Device.screen:scaleBySize(math.floor(base*factor+.5))
+    return math.floor(base*factor+.5)
 end
 
 local function usable_font_name(value)
@@ -815,28 +818,27 @@ function Plugin:_show_thought_href(href)
     self._thought_popup_busy=true
     local started=os.clock()
     local ok,unexpected=xpcall(function()
-        local group,err,token=Thoughts.find(self.store,info.book_id,info.chapter_uid,info.range)
+        local group,err=Thoughts.find(self.store,info.book_id,info.chapter_uid,info.range)
         if not group then self:info(tostring(err or "没有想法内容")); return end
+        local text=Thoughts.popup_text(group)
+        if text=="" then self:info("没有想法内容"); return end
+        local abstract=Thoughts.group_abstract(group)
         local prefs=self.store:preferences().thoughts or {}
-        local source_html,html,metrics,html_cache_hit=Thoughts.popup_parts_cached(
-            self.store,info.book_id,info.chapter_uid,info.range,group,token
-        )
-        if html=="" then self:info("没有想法内容"); return end
-        ThoughtPopup.show{
-            source_html=source_html,
-            html=html,
-            font_size=self:_thought_font_size(prefs.font),
-            font_name=self:_thought_font_name(),
-            width_ratio=tonumber(prefs.width_ratio) or 0.91,
-            height_ratio=tonumber(prefs.height_ratio) or 0.60,
-            css=Thoughts.popup_css(),
-            metrics=metrics,
-        }
+        local Font=require("ui/font")
+        local Screen=require("device").screen
+        local TextViewer=require("ui/widget/textviewer")
+        UIManager:show(TextViewer:new{
+            text=text,
+            title=U.trim(abstract) or "想法",
+            title_face=Font:getFace("cfont",18),
+            text_face=Font:getFace(self:_thought_font_name() or "cfont", self:_thought_font_pt(prefs.font)),
+            width=math.floor(Screen:getWidth()*(tonumber(prefs.width_ratio) or 0.91)),
+            height=math.floor(Screen:getHeight()*(tonumber(prefs.height_ratio) or 0.60)),
+            add_nav_bar=true,
+        })
         logger.info("[MiuThought][ThoughtPopup] opened",
             "book=",tostring(info.book_id),"chapter=",tostring(info.chapter_uid),
-            "comments=",tostring(metrics and metrics.comment_count or 0),
-            "chapter_cache=",token and token.cache_hit and "hit" or "miss",
-            "html_cache=",html_cache_hit and "hit" or "miss",
+            "comments=",tostring(#(group.texts or {})),
             "elapsed_ms=",tostring(math.floor((os.clock()-started)*1000+.5)))
     end,debug.traceback)
     self._thought_popup_busy=false
