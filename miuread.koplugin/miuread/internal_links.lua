@@ -70,19 +70,31 @@ end
 local function get_attr(tag, name)
     tag = tostring(tag or "")
     local wanted = tostring(name or ""):lower()
-    for key, value in tag:gmatch('([%w:_%-]+)%s*=%s*"([^"]*)"') do
-        if key:lower() == wanted then return value end
-    end
-    for key, value in tag:gmatch("([%w:_%-]+)%s*=%s*'([^']*)'") do
-        if key:lower() == wanted then return value end
+    local cursor=1
+    while true do
+        local first,last,key,quote,value=tag:find("([%w:_%-]+)%s*=%s*(['\"])(.-)%2",cursor)
+        if not first then return end
+        -- Consume each complete quoted attribute. A title containing href=
+        -- must not be mistaken for the anchor's actual href attribute.
+        if key:lower() == wanted then return value,first,last,quote end
+        cursor=last+1
     end
 end
 
 local function remove_href_attr(attrs)
-    local name="[hH][rR][eE][fF]"
-    local out,count=tostring(attrs or ""):gsub("%s+"..name..'%s*=%s*"[^"]*"',"",1)
-    if count==0 then out=out:gsub("%s+"..name.."%s*=%s*'[^']*'","",1) end
-    return out
+    attrs=tostring(attrs or "")
+    local _,first,last=get_attr(attrs,"href")
+    if not first then return attrs end
+    return attrs:sub(1,first-1):gsub("%s+$","")..attrs:sub(last+1)
+end
+
+local function replace_href_attr(attrs, value)
+    local old,first,last,quote=get_attr(attrs,"href")
+    if not first or old==value then return attrs end
+    local prefix=attrs:sub(first,last):match("^.-=%s*")
+    local escaped=quote=='"' and encode_href(value)
+        or tostring(value or ""):gsub("&", "&amp;"):gsub("'", "&apos;")
+    return attrs:sub(1,first-1)..prefix..quote..escaped..quote..attrs:sub(last+1)
 end
 
 local function strip_tags(html)
@@ -336,20 +348,13 @@ local function resolve_link(current_path, href, attrs, inner, index)
 end
 
 local function rewrite_href_values(html, callback)
-    local changed = false
-    local function replace_double(prefix, value)
-        local new_value = callback(value)
-        if new_value ~= value then changed = true end
-        return prefix .. '"' .. encode_href(new_value) .. '"'
-    end
-    local function replace_single(prefix, value)
-        local new_value = callback(value)
-        if new_value ~= value then changed = true end
-        return prefix .. "'" .. tostring(new_value or ""):gsub("&", "&amp;"):gsub("'", "&apos;") .. "'"
-    end
-    html = tostring(html or ""):gsub('(<[aA][^>]-[hH][rR][eE][fF]%s*=%s*)"([^"]*)"', replace_double)
-    html = html:gsub("(<[aA][^>]-[hH][rR][eE][fF]%s*=%s*)'([^']*)'", replace_single)
-    return html, changed
+    local raw=tostring(html or "")
+    local rewritten=raw:gsub("(<[aA])(%s[^>]*)(>)",function(open,attrs,close)
+        local href=get_attr(attrs,"href")
+        if not href then return open..attrs..close end
+        return open..replace_href_attr(attrs,callback(href))..close
+    end)
+    return rewritten,rewritten~=raw
 end
 
 function M.rewrite_documents(documents, options)
@@ -370,7 +375,7 @@ function M.rewrite_documents(documents, options)
         local raw = tostring(doc.html or "")
         local rewritten, changed = rewrite_href_values(raw, function(href)
             stats.links = stats.links + 1
-            local new_href, reason, critical = resolve_link(current_path, decode_entities(href), "", "", index)
+            local new_href, reason, critical = resolve_link(current_path, href, "", "", index)
             stats.reasons[reason] = (stats.reasons[reason] or 0) + 1
             if reason == "ignored" or reason == "custom" then
                 stats.ignored = stats.ignored + 1
@@ -433,16 +438,10 @@ function M.rewrite_documents_strict(documents, options)
             stats.dropped=(tonumber(stats.dropped) or 0)+1
             return "<a" .. remove_href_attr(attrs) .. ">" .. inner .. "</a>"
         end
-        local escaped_old = tostring(href):gsub("([^%w])", "%%%1")
-        local attr_name = "[hH][rR][eE][fF]"
-        local new_attrs, count = attrs:gsub('(' .. attr_name .. '%s*=%s*)"' .. escaped_old .. '"', function(prefix)
-            return prefix .. '"' .. encode_href(new_href) .. '"'
-        end, 1)
-        if count == 0 then
-            new_attrs = attrs:gsub("(" .. attr_name .. "%s*=%s*)'" .. escaped_old .. "'", function(prefix)
-                return prefix .. "'" .. tostring(new_href):gsub("&", "&amp;"):gsub("'", "&apos;") .. "'"
-            end, 1)
-        end
+        -- Keep ignored/custom/unchanged URLs byte-for-byte. Escaping an
+        -- already escaped &amp; here would grow it again on every validation
+        -- pass and make a valid book fail the transactional stability check.
+        local new_attrs=replace_href_attr(attrs,new_href)
         return "<a" .. new_attrs .. ">" .. inner .. "</a>"
     end
 
@@ -538,22 +537,19 @@ local function rewrite_html_strict(raw, current_path, index, stats, options)
             end
         else
             stats.valid = stats.valid + 1
-            if new_href ~= decode_entities(href) then stats.rewritten = stats.rewritten + 1 end
+            if new_href ~= decode_entities(href) then
+                stats.rewritten = stats.rewritten + 1
+                stats.repair_samples=stats.repair_samples or {}
+                if #stats.repair_samples < sample_limit then
+                    stats.repair_samples[#stats.repair_samples+1]=current_path.." -> "..href.." => "..new_href
+                end
+            end
         end
         if unresolved_reason(reason) and options.neutralize_unresolved==true then
             stats.dropped=(tonumber(stats.dropped) or 0)+1
             return "<a" .. remove_href_attr(attrs) .. ">" .. inner .. "</a>"
         end
-        local escaped_old = tostring(href):gsub("([^%w])", "%%%1")
-        local attr_name = "[hH][rR][eE][fF]"
-        local new_attrs, count = attrs:gsub('(' .. attr_name .. '%s*=%s*)"' .. escaped_old .. '"', function(prefix)
-            return prefix .. '"' .. encode_href(new_href) .. '"'
-        end, 1)
-        if count == 0 then
-            new_attrs = attrs:gsub("(" .. attr_name .. "%s*=%s*)'" .. escaped_old .. "'", function(prefix)
-                return prefix .. "'" .. tostring(new_href):gsub("&", "&amp;"):gsub("'", "&apos;") .. "'"
-            end, 1)
-        end
+        local new_attrs=replace_href_attr(attrs,new_href)
         return "<a" .. new_attrs .. ">" .. inner .. "</a>"
     end)
     return rewritten, rewritten ~= raw
@@ -612,8 +608,9 @@ function M.rewrite_files_strict(entries, options)
         raw = nil
         if changed or tonumber(verify_stats.unresolved_critical or 0) > 0 then
             cleanup_temps(entries)
-            return stats, changed and "仍有可修复但尚未稳定写入的内部链接"
+            local reason=changed and "仍有可修复但尚未稳定写入的内部链接"
                 or ("仍有 " .. tostring(verify_stats.unresolved_critical) .. " 个关键内部链接无效")
+            return stats,reason.."："..normalize_path(entry.path),verify_stats
         end
         collectgarbage("step", 100)
     end

@@ -260,6 +260,27 @@ function Installer.inspect(path)
     return meta,entries
 end
 
+-- Read generated chapter text one chapter at a time. Translation display
+-- inspection must not extract images, rewrite the archive or retain a whole
+-- book in memory. Older MiuRead EPUBs use the same stored ZIP entry format.
+function Installer.visit_chapter_text(path, callback)
+    local meta, entries = Installer.inspect(path)
+    if not meta then return nil, entries end
+    local bytes = 0
+    for index = 1, meta._chapter_count do
+        local entry = entries[string.format("OEBPS/text/chapter-%04d.xhtml", index)]
+        bytes = bytes + entry.uncompressed
+        if entry.uncompressed > 2*1024*1024 or bytes > 64*1024*1024 then
+            return nil, "translation_inspection_size_limit"
+        end
+        local html, err = read_entry(path, entry)
+        if not html then return nil, err end
+        local accepted, reason = callback(html, index, (meta.chapters or {})[index] or {})
+        if not accepted then return nil, reason or "chapter_inspection_failed" end
+    end
+    return true, meta
+end
+
 local function contains_all(new_chapters,old_chapters)
     local new=uid_set(new_chapters)
     for uid in pairs(uid_set(old_chapters)) do if not new[uid] then return nil,uid end end

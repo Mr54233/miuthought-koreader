@@ -780,10 +780,12 @@ local function repair_internal_links(chapters)
     end
 
     if all_on_disk then
-        local stats, repair_error = InternalLinks.rewrite_files_strict(file_entries, {sample_limit = 12, neutralize_unresolved = true})
+        local stats, repair_error, validation_stats = InternalLinks.rewrite_files_strict(file_entries, {sample_limit = 12, neutralize_unresolved = true})
         if not stats then error("书内链接索引失败：" .. tostring(repair_error)) end
         if repair_error then
-            local detail = #(stats.samples or {}) > 0 and ("\n" .. table.concat(stats.samples, "\n")) or ""
+            local samples=validation_stats and validation_stats.repair_samples
+            if not samples or #samples==0 then samples=validation_stats and validation_stats.samples or stats.samples or {} end
+            local detail = #samples > 0 and ("\n" .. table.concat(samples, "\n")) or ""
             error("书内链接处理未完成：" .. tostring(repair_error) .. detail)
         end
         logger.info("[MiuRead][InternalLinks] low-memory links=", tostring(stats.links or 0),
@@ -1061,7 +1063,35 @@ function Downloader:_save(book, chapters, assets, css, cover, opt, failures, ses
     if not valid then
         logger.warn("[MiuRead][Download] EPUB validation failed",tostring(validation_error))
         os.remove(temp_path)
+        if opt.generate_translation_uid then
+            local reason=U.first_line(U.redact_url(validation_error or "未知原因"),160)
+            error("书籍内容验证未通过："..reason.."；未覆盖原文件。 [MiuReadEpubValidation]",0)
+        end
         error("书籍内容验证未通过，未覆盖原文件。 [MiuReadEpubValidation]")
+    end
+    if opt.generate_translation_uid then
+        local translated,translation_error=require("miuread.translation").inspect(temp_path)
+        if not translated then
+            os.remove(temp_path)
+            logger.warn("[MiuRead][Translation] generated chapter inspection failed",tostring(translation_error))
+            error("译文章节解析未通过："..U.first_line(translation_error or "未知原因",160).."；原文件已保留。",0)
+        end
+        if (translated.recoveries or 0)>0 then
+            logger.info("[MiuRead][Translation] imported markup read with reader recovery",
+                "recoveries=",tostring(translated.recoveries),"blocks=",tostring(translated.blocks))
+        end
+        local current_ready=false
+        for _,chapter in ipairs(translated and translated.chapters or {}) do
+            if chapter.chapter_uid==tostring(opt.generate_translation_uid) and chapter.blocks>0 then current_ready=true end
+        end
+        if not current_ready then
+            os.remove(temp_path)
+            error("译文状态已更新，但章节正文尚未返回译文。原文件已保留，请稍后再次切换。 "..tostring(translation_error or ""))
+        end
+        if opt.translation_mode=="translation" and not translated.separable then
+            os.remove(temp_path)
+            error("本书译文暂时无法安全单独分离，请选择双语模式重试。原文件已保留。")
+        end
     end
     logger.info("[MiuRead][Download] low-memory EPUB package completed",
         "bytes=",tostring(U.file_size(temp_path) or 0),
@@ -1120,6 +1150,7 @@ function Downloader:_save(book, chapters, assets, css, cover, opt, failures, ses
         title_transform_version=tonumber(opt.title_transform_version) or TITLE_TRANSFORM_VERSION,
         pending_install=defer_install or nil,
         pending_file=pending_path,
+        translation_mode=opt.generate_translation_uid and opt.translation_mode or nil,
         annotation_requested=opt.annotation_requested==true or opt.annotations==true,
         annotation_pending=opt.annotation_pending==true or nil,
         annotation_fallback=opt.annotation_fallback==true or nil,
@@ -1413,6 +1444,33 @@ function Downloader:_book_once(input, opt, progress)
     end
     if #selected == 0 then error("no readable chapter") end
     expected = #selected
+    local translation_generation=opt.generate_translation_uid and require("miuread.translation_generation")
+    if opt.generate_translation_uid then
+        -- Explicit reader action only. Ordinary downloads keep their existing
+        -- bounded behaviour and do not start translation jobs for a whole book.
+        local included={}
+        for _,chapter in ipairs(selected) do included[tostring(chapter.chapterUid or chapter.uid)]=true end
+        if not included[tostring(opt.generate_translation_uid)] then error("当前章节不在本地书籍范围内，原文件已保留。") end
+        local next_included=false
+        for index,chapter in ipairs(all) do
+            if tostring(chapter.chapterUid or chapter.uid)==tostring(opt.generate_translation_uid) then
+                local next_chapter=all[index+1]
+                next_included=next_chapter and included[tostring(next_chapter.chapterUid or next_chapter.uid)] or false
+                break
+            end
+        end
+        opt.translation_refresh_versions=translation_generation.prepare(self.api,book.bookId,all,opt.generate_translation_uid,{
+            include_next=next_included,timeout=90,cancelled=opt.cancelled,
+            progress=function(message)
+                respect_reader_priority("chapter")
+                progress("chapter",0,expected,book.title,{message=message,activity="translation_wait"})
+            end,
+        })
+        for _,chapter in ipairs(selected) do
+            local version=opt.translation_refresh_versions[tostring(chapter.chapterUid or chapter.uid)]
+            if version then chapter.translateVersion=version end
+        end
+    end
     local format = catalog.format == "txt" and "txt" or "epub"
     local cache = cache_new(self.store, book, opt, selected, format)
     opt.title_transform_version=tonumber(cache.manifest.title_transform_version) or TITLE_TRANSFORM_VERSION
@@ -1750,6 +1808,12 @@ function Downloader:_book_once(input, opt, progress)
         local entry = cache.manifest.chapters[uid]
         local body, style, new_assets, coord_body
 
+        local refresh_translation=translation_generation and translation_generation.should_refresh(opt.translation_refresh_versions,uid) or false
+        if entry and refresh_translation then
+            logger.info("[MiuRead][Translation] refreshing translated chapter", "chapter=",uid)
+            cache_reset_entry(cache,uid)
+            entry=nil
+        end
         if entry then
             local current_title = tostring(chapter.title or "")
             local current_words = tonumber(chapter.wordCount or chapter.word_count or 0) or 0
@@ -1889,6 +1953,8 @@ function Downloader:_book_once(input, opt, progress)
             local ok, downloaded, downloaded_style, downloaded_assets, state = pcall(
                 self.reader.chapter, self.reader, book, chapter, format, {
                     images=opt.images,
+                    translation=refresh_translation,
+                    require_translation=uid==tostring(opt.generate_translation_uid or ""),
                     activity=chapter_activity,
                     -- Chapter content is the only place where reuse is enabled:
                     -- five sequential requests to the same origin per chapter.
@@ -1896,6 +1962,7 @@ function Downloader:_book_once(input, opt, progress)
                     yield=function(stage) respect_reader_priority(stage or "images") end,
                 })
             if not ok then
+                if tostring(downloaded):find("[MiuReadTranslationContentPending]",1,true) then error(downloaded) end
                 if Http.is_rate_limit_error(downloaded) then error(downloaded) end
                 if Http.is_auth_error(downloaded) then error(downloaded) end
                 if Http.is_network_error(downloaded) then

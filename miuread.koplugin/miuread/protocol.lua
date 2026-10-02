@@ -49,9 +49,19 @@ function P.reader_url(book_id, chapter_uid)
     return u
 end
 function P.mp_reader_url(book_id) return "https://weread.qq.com/web/mp/reader/"..P.obfuscate(book_id) end
-function P.content_fields(book_id, chapter_uid, psvts, style)
+function P.content_fields(book_id, chapter_uid, psvts, style, context)
     local now=os.time(); if P.obfuscate(now)==tostring(psvts or "") then now=now+1 end
     local t={b=P.obfuscate(book_id),c=P.obfuscate(chapter_uid),r=tostring(math.random(0,9999)^2),ct=tostring(now),ps=tostring(psvts or ""),pc=P.obfuscate(now),sc=1,prevChapter=false,st=style and 1 or 0}
+    if context and context.translation==true then
+        -- Use the browser request first. The existing download request is a
+        -- bounded compatibility fallback when that representation is empty
+        -- or stale; its response must still contain the requested translation.
+        if not context.compatibility then
+            t.sc=0
+            t.prevChapter=nil
+            t.pc=optional(context.pclts) or t.pc
+        end
+    end
     t.s=P.web_sign(P.query(t)); return t
 end
 function P.app_id(ua)

@@ -45,7 +45,7 @@ function M.reader(plugin)
             {text="觅阅设置",sub_item_table_func=function() return PluginSettings.menu(plugin) end},
         }
     end
-    return {
+    local rows={
         {text="当前书籍",sub_item_table_func=function() return plugin:current_book_menu() end},
         {text="打开觅阅书架",callback=plugin:safe("shelf",function() plugin:show_shelf(false,false,"account") end)},
         {text=plugin:_sync_menu_text(),sub_item_table_func=function() return PluginSettings.sync(plugin) end},
@@ -55,6 +55,12 @@ function M.reader(plugin)
         {text="系统维护",post_text="诊断 修复与清理",sub_item_table_func=function() return PluginSettings.system_maintenance(plugin) end},
         {text="觅阅设置",sub_item_table_func=function() return PluginSettings.menu(plugin) end},
     }
+    if plugin:_reader_translation_candidate() then
+        table.insert(rows,2,{text="外文翻译",post_text=plugin:_reader_translation_label(),callback=function()
+            plugin:_show_reader_translation_panel(function() plugin:_show_koreader_reader_menu() end)
+        end})
+    end
+    return rows
 end
 
 return M

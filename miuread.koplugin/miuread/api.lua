@@ -391,6 +391,51 @@ function Api:web_progress(id)
     return data
 end
 
+function Api:_translation_web_call(path, id, payload, raw_body)
+    id=tostring(id or "")
+    if not id:match("^CB_") then error("translation requires an imported book") end
+    local options={auth=true,retries=0,rate_limit_retries=0,rate_limit_fail_fast=true,timeout={8,20},
+        headers={Accept="application/json, text/plain, */*",Origin="https://weread.qq.com",Referer=Protocol.reader_url(id)}}
+    return self:_recover_web_once("translation",function()
+        if payload==nil and raw_body==nil then
+            return unwrap(self.http:get_json("https://weread.qq.com"..path,options))
+        elseif raw_body then
+            options.url="https://weread.qq.com"..path
+            options.method="POST"
+            options.body=raw_body
+            return unwrap(self.http:json(options))
+        end
+        return unwrap(self.http:post_json("https://weread.qq.com"..path,payload,options))
+    end,true)
+end
+
+function Api:translation_member_summary(id)
+    return self:_translation_web_call("/web/pay/memberCardSummary?pf=ios",id)
+end
+
+function Api:toggle_translate(id, enabled)
+    return self:_translation_web_call("/web/reader/toggleTranslate",id,{bookId=tostring(id),enabled=enabled==true})
+end
+
+function Api:en_read(id, chapter_uid, read)
+    local Json=require("miuread.json")
+    local uid=scalar(chapter_uid)
+    if uid==nil or tostring(uid)=="" then error("translation chapter uid missing") end
+    local entries={}
+    for _,item in ipairs(type(read)=="table" and read or {}) do
+        local item_uid=scalar(item.uid)
+        if item_uid~=nil and tostring(item_uid)~="" then
+            entries[#entries+1]={uid=tonumber(item_uid) or tostring(item_uid),translateVersion=tonumber(item.translateVersion) or 0}
+        end
+    end
+    if #entries<1 or #entries>2 then error("translation may request only the current and next chapters") end
+    -- KOReader JSON backends disagree on an empty Lua table ({} or []).
+    -- Emit the official texts:[] literally, and never activate a free trial.
+    local body='{"bookId":'..Json.encode(tostring(id))..',"reference":{"uid":'
+        ..Json.encode(tonumber(uid) or tostring(uid))..',"texts":[]},"read":'..Json.encode(entries)..'}'
+    return self:_translation_web_call("/web/book/enRead",id,nil,body)
+end
+
 function Api:_chapter_call(name, id, chapter_uid, extra, request_options)
     local last
     local candidates = unique_candidates(chapter_uid)
