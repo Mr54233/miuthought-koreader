@@ -28,6 +28,7 @@ local LEGACY_RECORD_KEY="extension_center_installed"
 local SEARCH_CACHE_KEY="extension_center_search_cache_v2"
 local META_CACHE_KEY="extension_center_repo_cache_v3"
 local UPDATE_STATE_KEY="extension_center_update_state_v3"
+local UPDATE_CHECK_META_KEY="extension_center_update_check_v1"
 local PENDING_KEY="extension_center_pending_restart_v1"
 local NETWORK_KEY="extension_center_network_v2"
 local TEMP_CLEANUP_KEY="extension_center_temp_cleanup_v1"
@@ -35,6 +36,8 @@ local MAX_RESULTS=24
 local SEARCH_TTL=30*60
 local META_TTL=30*60
 local UPDATE_VISIBLE_TTL=24*60*60
+local UPDATE_AUTO_INTERVAL=12*60*60
+local UPDATE_RETRY_INTERVAL=30*60
 local MAX_PLUGIN_BYTES=96*1024*1024
 local EXTENSION_TEMP_TTL=24*60*60
 local EXTENSION_STAGE_TTL=6*60*60
@@ -843,6 +846,31 @@ local function run_async_with_progress(plugin,text,label,fn,done,timeout,options
     return true
 end
 
+-- Background extension discovery must never show a modal progress dialog. It
+-- shares the same subprocess lane as foreground extension work, so an install
+-- or an explicit search always wins and the silent check simply waits until the
+-- next trigger instead of competing for network/CPU on low-memory devices.
+local function run_async_silent(plugin,label,fn,done,timeout)
+    local worker=extension_worker(plugin)
+    if worker:busy() then return false,"busy" end
+    local function finish(result)
+        local ok,err=xpcall(function()
+            if type(result)=="table" and result.ok==true then
+                if type(done)=="function" then done(result.value,nil) end
+            elseif type(done)=="function" then
+                done(nil,type(result)=="table" and result.error or "后台任务失败")
+            end
+        end,debug.traceback)
+        if not ok then logger.warn("[MiuRead][Extensions] silent result handling failed",tostring(err)) end
+    end
+    local started,err=worker:run(tostring(label or "extension_silent"),function()
+        local HttpChild=require("miuread.http")
+        plugin.http=HttpChild:new(plugin.store)
+        return fn()
+    end,finish,tonumber(timeout) or 45)
+    return started==true,err
+end
+
 local function pending_state(plugin)
     local value=plugin.store:get(PENDING_KEY,{})
     value=type(value)=="table" and value or {}
@@ -908,6 +936,15 @@ end
 
 local function save_update_state(plugin,value)
     plugin.store:set(UPDATE_STATE_KEY,type(value)=="table" and value or {})
+end
+
+local function update_check_meta(plugin)
+    local value=plugin.store:get(UPDATE_CHECK_META_KEY,{})
+    return type(value)=="table" and value or {}
+end
+
+local function save_update_check_meta(plugin,value)
+    plugin.store:set(UPDATE_CHECK_META_KEY,type(value)=="table" and value or {})
 end
 
 local function update_key(item)
@@ -1187,7 +1224,10 @@ local function show_extension_progress(plugin,display_name)
     return dialog
 end
 
+local bulk_update_failed
+
 local function notify_install_failed(plugin,repo,message)
+    if type(bulk_update_failed)=="function" then pcall(bulk_update_failed,plugin,repo,message) end
     if type(plugin._on_extension_install_failed)=="function" then
         local ok,err=pcall(plugin._on_extension_install_failed,plugin,repo,message)
         if not ok then logger.warn("[MiuRead][Extension] install-failed hook failed",tostring(repo),tostring(err)) end
@@ -1390,6 +1430,11 @@ local function install_repo(plugin,repo,repo_info,release,forced_source)
             if type(plugin._refresh_miuread_menu)=="function" then plugin:_refresh_miuread_menu() end
             local action=result.updated and "更新完成" or "安装完成"
             local version=result.version~="" and ("\n版本："..result.version) or ""
+            local bulk_handled=false
+            if type(plugin._extension_bulk_update_success)=="function" then
+                local ok_bulk,value=pcall(plugin._extension_bulk_update_success,plugin,repo,result)
+                bulk_handled=ok_bulk and value==true
+            end
             local handled=false
             if type(plugin._on_extension_install_complete)=="function" then
                 local ok_hook,value=pcall(plugin._on_extension_install_complete,plugin,repo,result)
@@ -1399,7 +1444,7 @@ local function install_repo(plugin,repo,repo_info,release,forced_source)
                     handled=value==true
                 end
             end
-            if not handled then
+            if not handled and not bulk_handled then
                 plugin:info(action.."："..result.dir..version.."\n\n请完整重启 KOReader 后使用。")
             end
         end)
@@ -1412,6 +1457,85 @@ local function install_repo(plugin,repo,repo_info,release,forced_source)
         return
     end
     if dialog then dialog:set_state(task:snapshot() or {kind="extension",state="downloading",stage="download"}) end
+end
+
+local function start_bulk_update(plugin,entries)
+    if type(entries)~="table" or #entries==0 then return false end
+    if plugin._extension_bulk_update then plugin:info("已有批量扩展更新正在进行。") return false end
+    local queue={}
+    for _,entry in ipairs(entries) do
+        local item=entry.item or entry
+        if item and valid_repo(item.repo) then queue[#queue+1]={repo=canonical_repo(item.repo),name=tostring(item.name or item.dir or item.repo)} end
+    end
+    if #queue==0 then return false end
+    plugin._extension_bulk_update={queue=queue,index=1,success=0,current_repo=""}
+
+    local function finish(message)
+        local state=plugin._extension_bulk_update
+        plugin._extension_bulk_update=nil
+        plugin._extension_bulk_update_success=nil
+        plugin._extension_bulk_update_next=nil
+        if type(plugin._refresh_miuread_menu)=="function" then plugin:_refresh_miuread_menu() end
+        plugin:info(message or ("扩展批量更新完成："..tostring(state and state.success or 0).." 个。\n\n请完整重启 KOReader 后使用更新后的插件。"))
+    end
+
+    local function next_one()
+        local state=plugin._extension_bulk_update
+        if not state then return end
+        local row=state.queue[state.index]
+        if not row then finish(); return end
+        state.current_repo=row.repo
+        if type(plugin.status_toast)=="function" then
+            plugin:status_toast("批量更新扩展",tostring(state.index).."/"..tostring(#state.queue).." · "..row.name,2.5)
+        end
+        local started=select(1,run_async_silent(plugin,"extension_bulk_resolve",function()
+            local remote,err=resolve_repo_remote_complete(plugin,row.repo)
+            return {remote=remote,error=err}
+        end,function(value,worker_error)
+            local current=plugin._extension_bulk_update
+            if not current or current.current_repo~=row.repo then return end
+            local remote=type(value)=="table" and value.remote or nil
+            if not remote then
+                local _,msg=classify_github_error(worker_error or (type(value)=="table" and value.error or nil))
+                finish("批量更新在“"..row.name.."”停止："..msg.."。\n\n已经成功更新的插件不会回滚；其余扩展仍保留“有更新”状态，可稍后继续。")
+                return
+            end
+            install_repo(plugin,remote.repo,remote.info,remote.release)
+        end,45))
+        if not started then
+            finish("扩展中心当前有其他任务，批量更新已停止。\n\n没有清除任何剩余更新状态。")
+        end
+    end
+
+    plugin._extension_bulk_update_success=function(_,repo,result)
+        local state=plugin._extension_bulk_update
+        if not state or canonical_repo(repo)~=state.current_repo then return false end
+        state.success=state.success+1
+        state.index=state.index+1
+        state.current_repo=""
+        UIManager:scheduleIn(.35,next_one)
+        return true
+    end
+    plugin._extension_bulk_update_next=next_one
+    UIManager:nextTick(next_one)
+    return true
+end
+
+bulk_update_failed=function(plugin,repo,message)
+    local state=plugin._extension_bulk_update
+    if not state or canonical_repo(repo)~=state.current_repo then return false end
+    local row=state.queue[state.index] or {}
+    local success=tonumber(state.success) or 0
+    plugin._extension_bulk_update=nil
+    plugin._extension_bulk_update_success=nil
+    plugin._extension_bulk_update_next=nil
+    logger.warn("[MiuRead][Extensions] bulk update stopped","repo=",tostring(repo),"error=",tostring(message or ""))
+    -- The original failure path still shows its precise error. The batch state
+    -- is only cleared here; unprocessed plugins keep their update markers.
+    if type(plugin.status_toast)=="function" then
+        plugin:status_toast("批量更新已停止","已完成 "..tostring(success).." 个 · "..tostring(row.name or repo).." 更新失败",4)
+    end
+    return true
 end
 
 local function format_transfer_bytes(value)
@@ -2174,9 +2298,19 @@ local function recommendation_entry_row(plugin,entry,installed,states)
     end
     if valid_repo(entry.repo) then
         local item=installed[entry.repo]
-        local status=item and installed_status_label(plugin,item,states) or ""
+        local status=""
+        if item then
+            local state=recent_update_state(states,item)
+            if item.pending then status=pending_label(item.pending)
+            elseif item.duplicate then status="重复安装"
+            elseif state and state.status=="update" then status="有更新"
+            else status="已安装" end
+        end
         local transfer=active_extension_status(plugin,entry.repo)
         if transfer~="" and transfer~="安装完成" then status=transfer end
+        -- Recommendation rows intentionally never show a catalogue or local
+        -- version number. The detail page resolves GitHub live; the catalogue
+        -- version is only a verified fallback artifact identity.
         if status~="" then post=post~="" and (post.." · "..status) or status end
     end
     local target=entry
@@ -2247,13 +2381,106 @@ local function remote_update_status(plugin,item,remote)
     return update_status_for(plugin,item,remote.info,remote.release)
 end
 
-local function check_updates(plugin)
+local function trackable_plugins(plugin)
     local items={}
     for _,item in ipairs(managed_plugins(plugin)) do
         if item.ghost~=true and item.duplicate~=true and valid_repo(item.repo) then items[#items+1]=item end
     end
-    if #items==0 then plugin:info("暂无可检查更新的 GitHub 扩展。") return end
-    run_async_with_progress(plugin,"正在检查扩展更新……","extension_check_updates",function()
+    return items
+end
+
+local function update_summary(plugin)
+    local items=trackable_plugins(plugin)
+    local states=update_state(plugin)
+    local updates=0
+    for _,item in ipairs(items) do
+        local state=recent_update_state(states,item)
+        if state and state.status=="update" then updates=updates+1 end
+    end
+    local meta=update_check_meta(plugin)
+    local successful_at=tonumber(meta.last_successful_check_at) or 0
+    local fresh=successful_at>0 and os.time()-successful_at<=UPDATE_VISIBLE_TTL
+    return {
+        trackable=#items,updates=updates,checking=plugin._extension_update_checking==true,
+        checked_fresh=fresh,last_successful_check_at=successful_at,
+        last_attempt_at=tonumber(meta.last_attempt_at) or 0,
+        last_error=tostring(meta.last_error or ""),
+    }
+end
+
+local function apply_update_results(plugin,items,results,worker_error,options)
+    options=type(options)=="table" and options or {}
+    plugin._extension_update_checking=false
+    local now=os.time()
+    local meta=update_check_meta(plugin)
+    meta.last_attempt_at=now
+    if type(results)~="table" then
+        local _,message=classify_github_error(worker_error)
+        meta.last_error=message
+        save_update_check_meta(plugin,meta)
+        if not options.silent then plugin:info(message.."。") end
+        return false
+    end
+    local states=update_state(plugin)
+    local updates,unknown,blocked,known=0,0,0,0
+    for _,status in ipairs(results) do
+        local key=tostring(status.key or "")
+        local previous=type(states[key])=="table" and states[key] or nil
+        local previous_recent=previous and (os.time()-(tonumber(previous.checked_at) or 0)<=UPDATE_VISIBLE_TTL)
+        -- A transient GitHub/network failure must not erase a recently known
+        -- update. Keep the last trustworthy result until it expires or a later
+        -- successful check supersedes it.
+        if status.status=="unknown" and previous_recent
+            and (previous.status=="update" or previous.status=="same" or previous.status=="blocked") then
+            -- retain previous known state
+        else
+            states[key]=status
+        end
+        if status.status=="update" then updates=updates+1; known=known+1
+        elseif status.status=="same" then known=known+1
+        elseif status.status=="unknown" then unknown=unknown+1
+        elseif status.status=="blocked" then blocked=blocked+1; known=known+1 end
+    end
+    save_update_state(plugin,states)
+    if #results==0 or unknown==0 then
+        meta.last_successful_check_at=now
+        meta.last_error=""
+    elseif known>0 then
+        -- Partial checks are useful for per-plugin state but cannot certify
+        -- “全部已是最新” for the whole list.
+        meta.last_error="部分扩展暂时无法检查"
+    else
+        meta.last_error="暂时无法连接扩展来源"
+    end
+    save_update_check_meta(plugin,meta)
+    if type(plugin._refresh_miuread_menu)=="function" then plugin:_refresh_miuread_menu() end
+    if not options.silent then
+        local msg="检查完成："..tostring(#results).." 个扩展"
+        if updates>0 then msg=msg.."\n发现更新："..tostring(updates) end
+        if unknown>0 then msg=msg.."\n无法判断："..tostring(unknown) end
+        if blocked>0 then msg=msg.."\n当前设备不兼容："..tostring(blocked) end
+        plugin:info(msg)
+    elseif updates>0 and options.notify_updates==true and type(plugin.status_toast)=="function" then
+        plugin:status_toast("扩展更新","发现 "..tostring(updates).." 个可更新扩展",3)
+    end
+    if type(options.done)=="function" then pcall(options.done,update_summary(plugin)) end
+    return true
+end
+
+local function check_updates(plugin,options)
+    options=type(options)=="table" and options or {}
+    local items=trackable_plugins(plugin)
+    if #items==0 then
+        local meta=update_check_meta(plugin)
+        meta.last_attempt_at=os.time(); meta.last_successful_check_at=os.time(); meta.last_error=""
+        save_update_check_meta(plugin,meta)
+        if not options.silent then plugin:info("暂无可检查更新的 GitHub 扩展。") end
+        return false
+    end
+    if plugin._extension_update_checking==true then return false end
+    plugin._extension_update_checking=true
+    local meta=update_check_meta(plugin); meta.last_attempt_at=os.time(); save_update_check_meta(plugin,meta)
+    local function work()
         local results={}
         for _,item in ipairs(items) do
             local remote,err=resolve_repo_remote_complete(plugin,item.repo)
@@ -2263,26 +2490,31 @@ local function check_updates(plugin)
             results[#results+1]=status
         end
         return results
-    end,function(results,worker_error)
-        if type(results)~="table" then
-            local _,message=classify_github_error(worker_error); plugin:info(message.."。"); return
-        end
-        local states=update_state(plugin)
-        local updates,unknown,blocked=0,0,0
-        for _,status in ipairs(results) do
-            states[tostring(status.key or "")]=status
-            if status.status=="update" then updates=updates+1
-            elseif status.status=="unknown" then unknown=unknown+1
-            elseif status.status=="blocked" then blocked=blocked+1 end
-        end
-        save_update_state(plugin,states)
-        if type(plugin._refresh_miuread_menu)=="function" then plugin:_refresh_miuread_menu() end
-        local msg="检查完成："..tostring(#results).." 个扩展"
-        if updates>0 then msg=msg.."\n发现更新："..tostring(updates) end
-        if unknown>0 then msg=msg.."\n无法判断："..tostring(unknown) end
-        if blocked>0 then msg=msg.."\n当前设备不兼容："..tostring(blocked) end
-        plugin:info(msg)
-    end,math.max(45,#items*12))
+    end
+    local function done(results,worker_error)
+        apply_update_results(plugin,items,results,worker_error,options)
+    end
+    local started
+    if options.silent then
+        started=select(1,run_async_silent(plugin,"extension_check_updates_silent",work,done,math.max(45,#items*12)))
+    else
+        started=run_async_with_progress(plugin,"正在检查扩展更新……","extension_check_updates",work,done,math.max(45,#items*12))
+    end
+    if not started then
+        plugin._extension_update_checking=false
+        return false
+    end
+    return true
+end
+
+local function maybe_auto_check(plugin,reason)
+    local summary=update_summary(plugin)
+    if summary.trackable<=0 or summary.checking then return false end
+    local now=os.time()
+    if summary.last_successful_check_at>0 and now-summary.last_successful_check_at<UPDATE_AUTO_INTERVAL then return false end
+    if summary.last_attempt_at>0 and now-summary.last_attempt_at<UPDATE_RETRY_INTERVAL then return false end
+    logger.info("[MiuRead][Extensions] background update check scheduled","reason=",tostring(reason or "idle"),"count=",tostring(summary.trackable))
+    return check_updates(plugin,{silent=true,notify_updates=false,reason=reason})
 end
 
 local function check_single_update(plugin,item)
@@ -2401,6 +2633,45 @@ local function installed_detail_rows(plugin,item)
     return rows
 end
 
+local function update_menu(plugin)
+    local rows={}
+    local summary=update_summary(plugin)
+    local states=update_state(plugin)
+    local updates={}
+    for _,item in ipairs(trackable_plugins(plugin)) do
+        local state=recent_update_state(states,item)
+        if state and state.status=="update" then updates[#updates+1]={item=item,state=state} end
+    end
+    if #updates>0 then
+        rows[#rows+1]={text="可更新扩展",post_text=tostring(#updates).." 个",enabled=false}
+        if #updates>1 then
+            rows[#rows+1]={text="全部更新",post_text=tostring(#updates).." 个 · 逐个安全安装",keep_menu_open=true,callback=function()
+                UIManager:show(ConfirmBox:new{text="更新全部 "..tostring(#updates).." 个扩展？\n\n将逐个使用官方稳定版和现有完整性验证；如果某一项失败，批量流程会停止，尚未处理的更新状态会保留。",ok_text="全部更新",cancel_text="取消",ok_callback=function() start_bulk_update(plugin,updates) end})
+            end}
+        end
+        for _,entry in ipairs(updates) do
+            local target=entry.item
+            rows[#rows+1]={
+                text=tostring(target.name or target.dir),post_text="有更新",
+                sub_item_table_func=function() return installed_detail_rows(plugin,target) end,
+            }
+        end
+        rows[#rows+1]={text="重新检查",separator=true,post_text="GitHub 官方稳定版",keep_menu_open=true,callback=function()
+            check_updates(plugin,{silent=false})
+        end}
+    elseif summary.checking then
+        rows[#rows+1]={text="正在检查更新…",post_text=tostring(summary.trackable).." 个扩展",enabled=false}
+    elseif summary.checked_fresh then
+        rows[#rows+1]={text="全部已是最新",post_text=tostring(summary.trackable).." 个 GitHub 扩展",enabled=false}
+        rows[#rows+1]={text="重新检查",keep_menu_open=true,callback=function() check_updates(plugin,{silent=false}) end}
+    else
+        rows[#rows+1]={text="检查扩展更新",post_text=summary.trackable>0 and (tostring(summary.trackable).." 个 GitHub 扩展") or "暂无可检查扩展",
+            enabled=summary.trackable>0,keep_menu_open=true,callback=summary.trackable>0 and function() check_updates(plugin,{silent=false}) end or nil}
+        if summary.last_error~="" then rows[#rows+1]={text="上次检查",post_text=summary.last_error,enabled=false} end
+    end
+    return rows
+end
+
 local function installed_menu(plugin)
     local rows={}
     local pending_n=pending_count(plugin)
@@ -2441,6 +2712,26 @@ end
 
 function M.installed_count(plugin)
     return installed_count(plugin)
+end
+
+function M.update_summary(plugin)
+    return update_summary(plugin)
+end
+
+function M.update_count(plugin)
+    return tonumber(update_summary(plugin).updates) or 0
+end
+
+function M.update_menu(plugin)
+    return update_menu(plugin)
+end
+
+function M.maybe_auto_check(plugin,reason)
+    return maybe_auto_check(plugin,reason)
+end
+
+function M.check_updates(plugin)
+    return check_updates(plugin,{silent=false})
 end
 
 function M.download_rows(plugin)
@@ -2490,41 +2781,29 @@ end
 
 function M.menu(plugin)
     pcall(cleanup_stale_extension_temp,plugin,false)
-    local rows={
-        {text="觅阅推荐",post_text="人工精选 · 自动跟随稳定版",sub_item_table_func=function() return recommendation_menu(plugin) end},
-        {text="搜索扩展",keep_menu_open=true,callback=function() show_search_dialog(plugin) end},
-        {text="社区热门",post_text="GitHub",keep_menu_open=true,callback=function() github_search(plugin,"topic:koreader-plugin","社区热门",1,"popular",false) end},
-        {text="扩展下载源",post_text=network_mode_label(plugin),sub_item_table_func=function() return download_source_menu(plugin) end},
-        {text="已安装插件",separator=true,enabled=false},
-    }
+    UIManager:nextTick(function() pcall(maybe_auto_check,plugin,"extension_center_open") end)
+    local summary=update_summary(plugin)
     local pending_n=pending_count(plugin)
-    if pending_n>0 then
-        rows[#rows+1]={text="待重启生效",post_text=tostring(pending_n).." 项",sub_item_table_func=function() return pending_restart_rows(plugin) end}
+    local downloads=#extension_download_rows(plugin)
+    local rows={}
+    if summary.checking then
+        rows[#rows+1]={text="正在检查更新…",post_text=tostring(summary.trackable).." 个扩展",enabled=false}
+    elseif summary.updates>0 then
+        rows[#rows+1]={text="可更新扩展",post_text=tostring(summary.updates).." 个",sub_item_table_func=function() return update_menu(plugin) end}
+    elseif summary.checked_fresh then
+        rows[#rows+1]={text="扩展更新",post_text="全部已是最新",sub_item_table_func=function() return update_menu(plugin) end}
+    else
+        rows[#rows+1]={text="检查扩展更新",post_text=summary.trackable>0 and (tostring(summary.trackable).." 个扩展") or "暂无可检查扩展",
+            enabled=summary.trackable>0,keep_menu_open=true,callback=summary.trackable>0 and function() check_updates(plugin,{silent=false}) end or nil}
     end
-    local list=managed_plugins(plugin)
-    local trackable=0
-    for _,item in ipairs(list) do
-        if item.ghost~=true and valid_repo(item.repo) and not item.duplicate then trackable=trackable+1 end
-    end
-    rows[#rows+1]={
-        text="检查全部更新",
-        post_text=trackable>0 and (tostring(trackable).." 个 GitHub 扩展") or "暂无可检查扩展",
-        enabled=trackable>0,
-        keep_menu_open=true,
-        callback=trackable>0 and function() check_updates(plugin) end or nil,
-    }
-    local states=update_state(plugin)
-    for _,item in ipairs(list) do
-        local target=item
-        rows[#rows+1]={
-            text=tostring(target.name or target.dir),
-            post_text=installed_status_label(plugin,target,states),
-            sub_item_table_func=function() return installed_detail_rows(plugin,target) end,
-        }
-    end
-    if #list==0 then
-        rows[#rows+1]={text="暂无用户插件",post_text="可从“觅阅推荐”或“搜索扩展”安装",enabled=false}
-    end
+    rows[#rows+1]={text="已安装扩展",post_text=tostring(installed_count(plugin)).." 个",sub_item_table_func=function() return installed_menu(plugin) end}
+    if pending_n>0 then rows[#rows+1]={text="待重启生效",post_text=tostring(pending_n).." 项",sub_item_table_func=function() return pending_restart_rows(plugin) end} end
+    rows[#rows+1]={text="觅阅推荐",separator=true,post_text="人工精选",sub_item_table_func=function() return recommendation_menu(plugin) end}
+    rows[#rows+1]={text="搜索扩展",keep_menu_open=true,callback=function() show_search_dialog(plugin) end}
+    rows[#rows+1]={text="社区热门",post_text="GitHub",keep_menu_open=true,callback=function() github_search(plugin,"topic:koreader-plugin","社区热门",1,"popular",false) end}
+    if downloads>0 then rows[#rows+1]={text="插件下载任务",separator=true,post_text=tostring(downloads).." 项",sub_item_table_func=function() return extension_download_rows(plugin) end} end
+    rows[#rows+1]={text="扩展下载源",separator=downloads==0,post_text=network_mode_label(plugin),sub_item_table_func=function() return download_source_menu(plugin) end}
+    rows[#rows+1]={text="关于扩展中心",callback=function() center_about(plugin) end}
     return rows
 end
 

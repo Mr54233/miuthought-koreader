@@ -30,11 +30,10 @@ local function normalize_ratio(value)
     return value
 end
 
--- context.progress / remote_progress are WeRead 0-100 percents.
 local function percent_to_ratio(value)
-    value = tonumber(value)
+    value=tonumber(value)
     if not value then return nil end
-    return math.max(0, math.min(1, value / 100))
+    return math.max(0,math.min(1,value/100))
 end
 
 local function position(context, ratio)

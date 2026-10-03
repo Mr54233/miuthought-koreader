@@ -521,7 +521,6 @@ end
 
 function Editor:_copy_text()
     if Device and Device.input and Device.input.setClipboardText then
-        -- setClipboardText(text) is a plain function, not a method.
         pcall(Device.input.setClipboardText, clean_text(self.context.text))
         toast(self.host, "选中文字已复制到剪贴板", 2.5)
     end

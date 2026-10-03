@@ -595,6 +595,7 @@ local function cache_save_base(cache, chapter, coord_body, body, style, assets, 
     if state and (state.psvts or state.pclts or state.token or state.url) then
         cache.manifest.session = {
             psvts=state.psvts, pclts=state.pclts, token=state.token,
+            context_fetched_at=tonumber(state.context_fetched_at),
             book_version=tonumber(state.book_version
                 or (type(state.book)=="table" and
                     (state.book.version or state.book.bookVersion or state.book.book_version))),
@@ -730,7 +731,7 @@ function Downloader:catalog(id, request_options)
     -- chapterInfos does not reliably expose the book format. Use the reader
     -- page context when available; on failure keep the source titles unchanged.
     local book_format
-    local ok_state, state = pcall(self.reader.state, self.reader, id, request_options.keepalive)
+    local ok_state, state = pcall(self.reader.chapter_state, self.reader, id, nil, request_options.keepalive)
     if ok_state and type(state) == "table" and type(state.book) == "table" then
         book_format = tostring(state.book.format or ""):lower()
     else
@@ -1200,7 +1201,12 @@ function Downloader:_save(book, chapters, assets, css, cover, opt, failures, ses
             -- library[bookId].catalog above. Duplicating the full map in
             -- sessions caused #91's settings file to grow past Lua's parser
             -- nesting limit on long books.
-            reader_url=session.url, context_updated_at=os.time(),
+            -- Stamp when the reader page was loaded, not when the download
+            -- finished. psvts is reused across chapters, so these can be
+            -- minutes apart, and the workers reading this field decide from it
+            -- whether the context still signs a valid request.
+            reader_url=session.url,
+            context_updated_at=tonumber(session.context_fetched_at) or os.time(),
             app_id=Protocol.app_id(Protocol.USER_AGENT),
         })
     end

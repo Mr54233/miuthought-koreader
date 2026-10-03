@@ -1,6 +1,7 @@
 local SQLiteStore = require("miuread.sqlite_store")
 local Digests = require("miuread.digests")
 local U = require("miuread.util")
+local Thoughts = require("miuread.thoughts")
 local lfs = require("libs/libkoreader-lfs")
 
 local Favorites = {}
@@ -11,6 +12,10 @@ local unpack_args = table.unpack or unpack
 
 local function clean(value)
     return U.trim(tostring(value or ""))
+end
+
+local function clean_comment(value)
+    return U.trim(Thoughts.comment_text(value))
 end
 
 local function database_path(store)
@@ -75,7 +80,7 @@ local function identity_parts(row)
     return table.concat({
         "content", book_id, chapter_uid, range_key,
         clean(row.comment_author or row.author),
-        clean(row.comment_content or row.content),
+        clean_comment(row.comment_content or row.content),
     }, "\31")
 end
 
@@ -95,7 +100,7 @@ local function normalize(row)
         review_id = clean(row.review_id),
         source_text = clean(row.source_text),
         comment_author = clean(row.comment_author or row.author),
-        comment_content = clean(row.comment_content or row.content),
+        comment_content = clean_comment(row.comment_content or row.content),
         likes = math.max(0, tonumber(row.likes or 0) or 0),
         comment_created = math.max(0, tonumber(row.comment_created or row.created or 0) or 0),
         saved_at = math.max(0, tonumber(row.saved_at or 0) or 0),

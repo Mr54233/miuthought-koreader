@@ -369,6 +369,7 @@ function M.capture(ui, record, catalog)
     if catalog_row.words > MAX_CHAPTER_WORDS then return nil, "chapter_too_large_for_precision" end
 
     local before_xp = retreat_words(document, xp, 12)
+    local anchor_start = xp
     local anchor_end = advance_words(document, xp, 24)
     local point_side = "start"
     local anchor_text
@@ -376,7 +377,7 @@ function M.capture(ui, record, catalog)
     if anchor_end then anchor_text = doc_text(document, xp, anchor_end) end
 
     if not anchor_text or not anchor_text:find("%S") then
-        local anchor_start = retreat_words(document, xp, 24)
+        anchor_start = retreat_words(document, xp, 24)
         if not anchor_start then return nil, "anchor_unavailable" end
         anchor_text = doc_text(document, anchor_start, xp)
         if not anchor_text or not anchor_text:find("%S") then return nil, "anchor_empty" end
@@ -397,12 +398,25 @@ function M.capture(ui, record, catalog)
         if after_xp then context_after = doc_text(document, anchor_end, after_xp) or "" end
     end
 
+    -- beta.24 diagnostics only: record whether the immutable text window spans
+    -- two TOC chapters. Do not shorten or otherwise change the anchor yet; the
+    -- failure must remain fail-closed until real-device logs identify the cause.
+    local anchor_start_toc = anchor_start and select(1, toc_index_for_xpointer(toc, anchor_start)) or nil
+    local anchor_end_toc = anchor_end and select(1, toc_index_for_xpointer(toc, anchor_end)) or nil
+    local anchor_cross_chapter = anchor_start_toc and anchor_end_toc
+        and anchor_start_toc ~= anchor_end_toc or false
+    local chapter_title = tostring(catalog_row.chapter.title or local_row.title or "")
+    local normalized_title = U.trim(chapter_title):gsub("%s+", " ")
+    local normalized_anchor = U.trim(tostring(anchor_text or "")):gsub("%s+", " ")
+    local anchor_contains_chapter_title = normalized_title ~= ""
+        and normalized_anchor:find(normalized_title, 1, true) ~= nil
+
     return {
         xpointer = xp,
         toc_index = toc_index,
         chapter_uid = chapter_uid(catalog_row.chapter) ~= "" and chapter_uid(catalog_row.chapter) or uid,
         chapter_index = chapter_index(catalog_row.chapter, catalog_row.index),
-        chapter_title = tostring(catalog_row.chapter.title or local_row.title or ""),
+        chapter_title = chapter_title,
         chapter_word_count = catalog_row.words,
         total_word_count = catalog_row.total,
         words_before = catalog_row.before,
@@ -416,6 +430,10 @@ function M.capture(ui, record, catalog)
         point_side = point_side,
         anchor_kind = anchor_kind,
         anchor_chars = U.utf8_len(anchor_text),
+        anchor_start_toc_index = tonumber(anchor_start_toc),
+        anchor_end_toc_index = tonumber(anchor_end_toc),
+        anchor_cross_chapter = anchor_cross_chapter == true,
+        anchor_contains_chapter_title = anchor_contains_chapter_title == true,
         book_version = tonumber(record.record and record.record.progress_source_book_version)
             or tonumber(record.book and (record.book.version or record.book.bookVersion))
             or tonumber(record.record and (record.record.book_version or record.record.bookVersion)) or 0,

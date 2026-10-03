@@ -156,6 +156,17 @@ assert(tostring(prefs.shelf_filter.recovery_notice_pending or '')=='empty_select
 local shelf=st:shelf_cache()
 assert(#shelf.raw_books==2 and #shelf.books==2,'schema135 did not restore raw shelf books offline')
 assert(type(prefs.shelf_group_hint)=='table' and type(prefs.shelf_group_hint.accounts)=='table','schema135 did not initialize account-scoped group hint state')
+
+-- 5.9 beta.4: a selected remote may carry a diagnostic cycle
+-- remote.sources.web -> remote. Persistence must strip that graph before U.merge.
+local cyclic_remote={progress=100,percent=100,chapter_uid='40',offset=747,updated_at=123}
+cyclic_remote.sources={web=cyclic_remote,agent={progress=99,chapter_uid='39',offset=500}}
+st:save_session('book1',{position_state={version=1,remote_position=cyclic_remote,resolved={source='remote',reason='test',resolved_at=123}}},false)
+row=assert(st:session('book1'))
+assert(type(row.position_state)=='table' and type(row.position_state.remote_position)=='table','position state was lost during compaction')
+assert(row.position_state.remote_position.sources==nil,'cyclic position_state.remote_position.sources survived save_session')
+assert(row.position_state.remote_position.chapter_uid=='40' and row.position_state.remote_position.offset==747,'position state scalar coordinate was damaged')
+
 local loader,err=loadfile(TMP..'/settings.lua'); assert(loader,err)
 local ok,data=pcall(loader); assert(ok and type(data)=='table','compacted settings file is not valid Lua')
 print('store compaction + schema134/135 shelf recovery migration: PASS')

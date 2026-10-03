@@ -1,3 +1,33 @@
+# 5.9.0-beta.7 performance constraints
+
+## 开书 / 进度 reconciliation
+
+- **0 秒阻塞**：Reader 首屏直接使用本地位置，remote check 完全后台执行。
+- `OPEN_SYNC_SOFT_TIMEOUT_SECONDS=6` 仅控制提示寿命；soft timeout 不产生 local winner，也不授权上传。
+- 已有 durable exact local snapshot 时，自动开书先做 remote metadata fetch；只有 `REMOTE_NEWER` 才进入 source mapping / XPointer 重定位。
+- 同一本书 60 秒 read debounce 只允许复用“chapter/co 已精确对齐”的 remote cache；任何可能覆盖云端的写入仍必须通过 progress write fence。
+- `LOCAL_NEWER` / `ALIGNED` 的正常路径不运行 text-anchor 搜索。
+- remote 自动应用窗口约 15 秒；窗口后晚到的 newer remote 保留为 pending，不突然打断阅读，也不允许本地覆盖。
+- exact correction 最多一次 bounded percent fallback；正文 text anchor 和已验证 XPointer 缓存承担精确 correction。
+
+## 阅读事件时间
+
+- 第一帧/第一页恢复只建立 page baseline，不更新 local freshness。
+- 后续真实 page movement 才更新本地阅读事件时间。
+- 该追踪与 `time_enabled` 解耦，关闭阅读时间同步也不会损失进度 freshness。
+
+## 阅读时间
+
+- progress writer 优先于 reading-time writer。
+- 阅读时间 normal attempt + 最多一次运行期 retry；第二次失败直接 drop。
+- beta.5 不跨重启保存 reading-time SAFE debt；主页不扫描/展示 reading-time failure queue。
+
+## beta.3 translation / extension constraints（保持）
+
+- 普通整本下载继续复用 240 秒 book-scoped reader context；只有翻译生成请求使用 fresh/no-cache reader page。
+- 扩展自动更新检查只在启动空闲、扩展中心打开或主页网络恢复时触发，并使用独立后台 subprocess；活动 Reader 不启动这项检查。
+- 推荐列表不做逐项 GitHub 请求；只有详情页实时解析远端版本。
+
 # beta.19 阅读热路径说明
 
 - 60 秒 ReadReport 网络请求继续由后台服务执行。

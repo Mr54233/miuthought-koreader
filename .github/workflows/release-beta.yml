@@ -157,12 +157,26 @@ jobs:
           heading = f"## {version}"
 
           for index, line in enumerate(lines):
-              if line == heading or line.startswith(heading + " - "):
+              if (
+                  line == heading
+                  or line.startswith(heading + " - ")
+                  or line.startswith(heading + " — ")
+              ):
                   start = index + 1
                   break
 
           if start is None:
-              print(f"::error::CHANGELOG.md 缺少 {version}。")
+              wrong_heading = f"# {version}"
+              if any(
+                  line == wrong_heading
+                  or line.startswith(wrong_heading + " - ")
+                  or line.startswith(wrong_heading + " — ")
+                  for line in lines
+              ):
+                  print(f"::error::CHANGELOG.md 使用了一级版本标题：{wrong_heading}")
+                  print(f"::error::请改成：## {version}。版本条目必须使用二级标题，一级标题仅用于 # Changelog。")
+              else:
+                  print(f"::error::CHANGELOG.md 缺少 ## {version}。")
               sys.exit(1)
 
           for index in range(start, len(lines)):
@@ -229,6 +243,34 @@ jobs:
             exit 1
           fi
 
+      - name: Run Lua syntax checks and release regression verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 luajit
+          find miuread.koplugin -type f -name '*.lua' -print0 | xargs -0 -n1 luac5.1 -p
+          lua5.1 tools/test_position_resolution.lua
+          lua5.1 tools/test_position_state_hotfix.lua
+          lua5.1 tools/test_open_sync_contract.lua
+          lua5.1 tools/test_beta6_sync_contract.lua
+          lua5.1 tools/test_beta7_sync_contract.lua
+          lua5.1 tools/test_beta8_home_translation_contract.lua
+          lua5.1 tools/test_beta12_sync_contract.lua
+          lua5.1 tools/test_cloud_mirror_contract.lua
+          lua5.1 tools/test_long_book_anchor.lua
+          lua5.1 tools/test_terminal_progress_guard.lua
+          lua5.1 tools/test_finished_resolution.lua
+          lua5.1 tools/test_store_repair.lua
+          lua5.1 tools/test_cloud_freshness_contract.lua
+          lua5.1 tools/test_beta10_translation_dependency_contract.lua
+          luajit tools/test_translation.lua
+          luajit tools/test_translation_generation.lua
+          luajit tools/test_translation_fetch.lua
+          luajit tools/test_internal_links.lua
+          python3 tools/test_extension_center_ux.py
+          python3 tools/verify_590_beta12.py
+
       - name: Ensure release tag
         shell: bash
         run: |
@@ -255,14 +297,6 @@ jobs:
             git push origin "refs/tags/$RELEASE_TAG"
             echo "已创建 $RELEASE_TAG -> $BRANCH_SHA"
           fi
-
-      - name: Run Lua syntax checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y lua5.1
-          find miuread.koplugin -type f -name '*.lua' -print0 | xargs -0 -n1 luac5.1 -p
 
       - name: Build beta full package and manifest
         shell: bash

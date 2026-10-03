@@ -1163,6 +1163,42 @@ function DownloadTask:_heavy_watch(force)
     return true
 end
 
+function DownloadTask:_guard_running_memory(job,now,network_waiting)
+    if not job then return false end
+    if self:is_paused() or network_waiting==true or not self:is_heavy_stage() then
+        job.running_low_memory_samples=0
+        return false
+    end
+    local gap=math.max(3,tonumber(Config.HEAVY_DOWNLOAD_RUNNING_SAMPLE_SECONDS) or 5)
+    if now-(tonumber(job.running_memory_sample_at) or 0)<gap then return false end
+    job.running_memory_sample_at=now
+    local memory=RuntimePressure.memory_snapshot(true)
+    local available=memory and tonumber(memory.available_kb or 0) or 0
+    if available<=0 then return false end
+    local minimum=math.max(32*1024,tonumber(Config.HEAVY_DOWNLOAD_RUNNING_MIN_KB) or 72*1024)
+    if available>=minimum then
+        job.running_low_memory_samples=0
+        return false
+    end
+    job.running_low_memory_samples=(tonumber(job.running_low_memory_samples) or 0)+1
+    local required=math.max(2,tonumber(Config.HEAVY_DOWNLOAD_RUNNING_LOW_SAMPLES) or 2)
+    logger.warn("[MiuRead][HeavyGuard] running low memory",
+        "stage=",self:stage(),"memory_kb=",tostring(available),
+        "sample=",tostring(job.running_low_memory_samples).."/"..tostring(required))
+    if job.running_low_memory_samples<required or job.memory_hibernate_requested_at then return false end
+    job.memory_hibernate_requested_at=now
+    local state=U.copy(job.last_progress_state or {})
+    state.message="设备内存持续偏低，正在保存下载断点并暂停后台下载"
+    state.memory_kb=available
+    state.updated_at=now
+    if job.on_progress then pcall(job.on_progress,state) end
+    local requested,reason=self:request_hibernate("memory_pressure")
+    logger.warn("[MiuRead][DownloadTask] memory-pressure hibernate",
+        "pid=",tostring(job.pid),"memory_kb=",tostring(available),
+        "requested=",tostring(requested),"reason=",tostring(reason or ""))
+    return requested==true
+end
+
 function DownloadTask:_schedule()
     if self.poll_task then return end
     local task
@@ -1663,6 +1699,7 @@ function DownloadTask:_poll()
         or tonumber(job.waiting_started_at)
     local network_wait_age=network_waiting and network_wait_started
         and math.max(0,now-network_wait_started) or 0
+    if self:_guard_running_memory(job,now,network_waiting) then return end
     if background_lock_mode(self.power_mode) then
         local battery_ok,battery=self:_battery_allows_locked()
         if not battery_ok and not job.low_battery_hibernate_requested_at then

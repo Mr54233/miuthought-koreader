@@ -1,7 +1,7 @@
 local C = {
     NAME = "觅阅 · 微信读书助手",
-    VERSION = "5.7.5",
-    SCHEMA = 135,
+    VERSION = "5.9.0",
+    SCHEMA = 136,
     MIN_SUPPORTED_SCHEMA = 113,
     PLUGIN_DIR = "miuread.koplugin",
     DATA_DIR = "miuread",
@@ -109,6 +109,10 @@ local C = {
     -- reports stay on the established one-minute cadence and every request is
     -- independently capped, avoiding burst uploads after reconnect/resume.
     READ_REPORT_MAX_ELAPSED_SECONDS = 60,
+    -- beta.5: reading time is statistics, not durable reading position. One normal
+    -- attempt plus one runtime retry is enough; failures never survive restart.
+    READ_TIME_BEST_EFFORT = true,
+    READ_TIME_MAX_ATTEMPTS = 2,
     -- beta.13: progress writes have priority over periodic reading-time writes.
     -- The fence is a soft preemption: an already-dispatched time request is
     -- allowed to return, but no new time request may start while progress waits.
@@ -127,6 +131,19 @@ local C = {
     READ_REPORT_MAX_HEALTH_RESTARTS = 2,
     IDLE_TIMEOUT = 600,
     REMOTE_THRESHOLD = 2,
+
+    -- 5.9 seamless-resume policy. These are strategy constants, not ordinary
+    -- user-facing tuning knobs.
+    OPEN_SYNC_SOFT_TIMEOUT_SECONDS = 6.0,
+    OPEN_SYNC_HARD_TIMEOUT_SECONDS = 8,
+    LATE_REMOTE_APPLY_WINDOW_SECONDS = 15,
+    OPEN_SYNC_READ_DEBOUNCE_SECONDS = 60,
+    -- beta.7: 120s was too conservative on real devices. It turned a clearly
+    -- newer cloud chapter into an ambiguous conflict and made open-sync look
+    -- like it had silently stalled. Keep a small device/server skew guard, but
+    -- let timestamps decide once the difference is materially larger.
+    POSITION_CLOCK_SKEW_GRACE_SECONDS = 30,
+    POSITION_UNDO_SECONDS = 8,
 
     -- Coalesce page-turn control snapshots. Reading position stays in memory
     -- and is written at most once per window; suspend/close still flushes now.
@@ -313,6 +330,12 @@ local C = {
     -- little more permissive because a checkpointed worker has already paid
     -- most of its setup cost.
     HEAVY_DOWNLOAD_START_MIN_KB = 96 * 1024,
+    -- beta.26 continuously samples memory while a heavy worker stage is active.
+    -- Two consecutive low-memory samples are required before checkpointed
+    -- hibernation, avoiding task churn on a single transient dip.
+    HEAVY_DOWNLOAD_RUNNING_MIN_KB = 72 * 1024,
+    HEAVY_DOWNLOAD_RUNNING_LOW_SAMPLES = 2,
+    HEAVY_DOWNLOAD_RUNNING_SAMPLE_SECONDS = 5,
 
     -- beta.4 coalesces repeated typography taps into one KOReader reflow. On a
     -- low-memory/heavy-download overlap, let the downloader checkpoint first

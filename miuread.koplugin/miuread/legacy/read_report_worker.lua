@@ -75,15 +75,12 @@ local function normalize_progress_ratio(value)
     return value
 end
 
--- book.progress / remote_progress are WeRead 0-100 percents. Exactly 1 is 1%,
--- not "finished"; normalize_progress_ratio(1) would return 1.0 and mark the
--- cloud book as 100% read.
+-- WeRead book.progress / remote_progress are 0-100 percents. Exactly 1 is 1%,
+-- not ratio 1.0. Keep this conversion separate from ratio-normalization.
 local function percent_to_ratio(value)
-    value = tonumber(value)
-    if not value then
-        return nil
-    end
-    return math.max(0, math.min(1, value / 100))
+    value=tonumber(value)
+    if not value then return nil end
+    return math.max(0,math.min(1,value/100))
 end
 
 local function native_progress_percent(value)
@@ -302,7 +299,9 @@ local function refresh_context(client, book_id, book, force)
         local remote_offset = tonumber(remote.chapterOffset or remote.chapterPos or remote.offset)
         local remote_progress = tonumber(remote.progress)
         if remote_progress ~= nil or remote_uid ~= nil then
-            book.remote_progress = remote_progress or tonumber(book.progress) or 0
+            -- beta.5: server percent is diagnostic only. Never promote it to
+            -- a canonical progress fallback for reporting.
+            book.remote_raw_progress = remote_progress
             book.remote_chapter_uid = remote_uid or book.chapter_uid
             book.remote_chapter_idx = remote_idx or tonumber(book.chapter_idx) or 0
             book.remote_chapter_offset = remote_offset or tonumber(book.chapter_offset) or 0
@@ -393,7 +392,6 @@ end
 
 local function estimate_position(book, progress_ratio)
     local chapters = type(book.chapters) == "table" and book.chapters or {}
-    -- progress_ratio is a 0-1 ratio; book.progress is a 0-100 percent.
     local ratio = normalize_progress_ratio(progress_ratio)
         or percent_to_ratio(book.progress)
         or 0
@@ -408,15 +406,9 @@ local function estimate_position(book, progress_ratio)
     if book.source_is_standalone == true then
         local mapped, map_error = standalone_position(book, ratio)
         if mapped then return mapped end
-        if book.remote_progress_loaded == true then
-            return {
-                chapter_uid = book.remote_chapter_uid or book.chapter_uid or 0,
-                chapter_idx = tonumber(book.remote_chapter_idx or book.chapter_idx) or 0,
-                chapter_offset = tonumber(book.remote_chapter_offset or book.chapter_offset) or 0,
-                progress = math.floor((percent_to_ratio(book.remote_progress or book.progress) or 0) * 100),
-                source = "remote_fallback",
-            }
-        end
+        -- Raw server progress cannot safely synthesize a canonical standalone
+        -- position. If source mapping is unavailable, let the best-effort time
+        -- report fail/drop instead of replaying a potentially false 100%.
         return nil, map_error
     end
 
@@ -489,8 +481,10 @@ local function normalize_cloud_anchor(anchor, book)
         or book.remote_chapter_idx or book.chapter_idx)
     local offset = tonumber(anchor.chapter_offset or anchor.offset or anchor.chapterOffset
         or book.remote_chapter_offset)
-    local progress = tonumber(anchor.protocol_progress or anchor.raw_progress or anchor.raw_percent
-        or anchor.progress or book.remote_progress)
+    -- beta.5: reading-time context consumes canonical progress only. Raw server
+    -- percent is diagnostic and may legitimately disagree with chapter/co.
+    local progress = tonumber(anchor.canonical_progress or anchor.calculated_percent or anchor.progress
+        or anchor.protocol_progress or book.canonical_progress)
     if tostring(uid or "") == "" or offset == nil or progress == nil then return nil end
     return {
         chapter_uid = uid,
@@ -512,11 +506,33 @@ local function refresh_remote_anchor(client, book_id, book)
     local offset = tonumber(remote.chapterOffset or remote.chapterPos or remote.offset)
     local progress = tonumber(remote.progress)
     if tostring(uid or "") == "" or offset == nil or progress == nil then return false end
-    book.remote_progress = progress
+    book.remote_raw_progress = progress
     book.remote_chapter_uid = uid
     book.remote_chapter_idx = idx or tonumber(book.chapter_idx) or 0
     book.remote_chapter_offset = offset
     book.remote_progress_loaded = true
+    return true
+end
+
+local function last_readable_chapter_uid(book)
+    local chapters=type(book and book.chapters)=="table" and book.chapters or {}
+    for index=#chapters,1,-1 do
+        local chapter=chapters[index]
+        if not Content.is_structural_chapter(chapter) then
+            local uid=chapter_uid(chapter)
+            if tostring(uid or "")~="" then return tostring(uid) end
+        end
+    end
+    return nil
+end
+
+local function validate_terminal_progress(book,position)
+    if type(position)~="table" or tonumber(position.progress or 0)<100 then return true end
+    local last_uid=last_readable_chapter_uid(book)
+    if not last_uid then return false,"refusing unverified 100% progress without a readable final chapter" end
+    if tostring(position.chapter_uid or "")~=last_uid then
+        return false,"refusing 100% progress outside final readable chapter"
+    end
     return true
 end
 
@@ -528,6 +544,8 @@ local function build_payload(book_id, elapsed_seconds, book, progress_ratio, tim
             position, position_error = estimate_position(book, progress_ratio)
             if not position then return nil, position_error end
         end
+        local terminal_ok,terminal_error=validate_terminal_progress(book,position)
+        if not terminal_ok then return nil,terminal_error end
     end
     local payload=WeRead.make_read_payload{
         book_id = book_id,
@@ -604,7 +622,7 @@ local BOOK_PATCH_KEYS = {
     "local_native_chapter_offset", "local_chapter_offset_basis",
     "source_is_standalone", "source_chapter_uid", "source_chapter_index",
     "source_chapter_word_count", "source_chapter_title",
-    "catalog_complete", "remote_progress_loaded", "remote_progress",
+    "catalog_complete", "remote_progress_loaded", "remote_raw_progress",
     "remote_chapter_uid", "remote_chapter_idx", "remote_chapter_offset",
     "app_id", "read_context_updated_at", "read_context_ready", "core_map_hash",
 }

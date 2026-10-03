@@ -9,7 +9,7 @@ end
 function M.sync(plugin)
     return {
         {text="同步状态",post_text=plugin:_home_sync_status_label(),callback=function() plugin:show_sync_status(false) end},
-        {text="同步未完成内容",post_text="进度 划线 想法",callback=function() plugin:_sync_home_pending() end},
+        {text="重新同步失败内容",post_text="进度 时间 批注",callback=function() plugin:_sync_home_pending() end},
         {text="同步设置",post_text="时间 进度 批注",sub_item_table_func=function() return plugin:sync_settings_menu() end},
     }
 end

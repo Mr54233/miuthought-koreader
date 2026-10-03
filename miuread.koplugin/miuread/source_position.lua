@@ -1,5 +1,6 @@
 local U = require("miuread.util")
 local PosMap = require("miuread.annotations.posmap")
+local logger = require("logger")
 local WRCo = require("miuread.wr_co")
 local lfs = require("libs/libkoreader-lfs")
 
@@ -143,29 +144,39 @@ local function fetch_coord_html(reader, record, anchor, options)
     local version = tonumber(anchor.book_version or book.version or book.bookVersion
         or (record.record and (record.record.book_version or record.record.bookVersion))) or 0
     local paths = cache_paths(reader, book.book_id or book.bookId, uid, version)
-    for _, path in ipairs(paths) do
-        local cached = read_cached(path)
-        if cached then
-            return cached, true, nil, {kind="exact", path=path, version=version}
-        end
-    end
-
+    local refresh_uid = tostring(options.force_refresh_uid or "")
+    local force_refresh = options.force_refresh == true and (refresh_uid == "" or refresh_uid == uid)
     local legacy_seen, legacy_error = false, nil
-    if U.trim(tostring(anchor.anchor_text or "")) ~= "" then
-        for _, candidate in ipairs(legacy_cache_candidates(reader, book.book_id or book.bookId, uid, version)) do
-            local cached = read_cached(candidate.path)
+    if not force_refresh then
+        for _, path in ipairs(paths) do
+            local cached = read_cached(path)
             if cached then
-                legacy_seen = true
-                local map, verify_error = validate_anchor_source(cached, anchor)
-                if map then
-                    return cached, true, nil, {
-                        kind="legacy_verified", path=candidate.path, version=version,
-                        prebuilt_map=map,
-                    }
-                end
-                legacy_error = legacy_error or verify_error
+                return cached, true, nil, {kind="exact", path=path, version=version}
             end
         end
+
+        if U.trim(tostring(anchor.anchor_text or "")) ~= "" then
+            for _, candidate in ipairs(legacy_cache_candidates(reader, book.book_id or book.bookId, uid, version)) do
+                local cached = read_cached(candidate.path)
+                if cached then
+                    legacy_seen = true
+                    local map, verify_error = validate_anchor_source(cached, anchor)
+                    if map then
+                        return cached, true, nil, {
+                            kind="legacy_verified", path=candidate.path, version=version,
+                            prebuilt_map=map,
+                        }
+                    end
+                    legacy_error = legacy_error or verify_error
+                end
+            end
+        end
+    else
+        logger.info("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=cache_bypass",
+            "book=", tostring(book.book_id or book.bookId or ""),
+            "chapter=", uid,
+            "reason=force_source_refresh")
     end
 
     if options.cache_only == true then
@@ -192,13 +203,30 @@ local function fetch_coord_html(reader, record, anchor, options)
 
     local ok, downloaded, _, _, state = pcall(reader.chapter, reader,
         book_arg, chapter, "epub", {images=false})
-    if not ok then return nil, nil, "source_network_fetch_failed:" .. tostring(downloaded) end
+    if not ok then
+        local detail=tostring(downloaded or "")
+        local access_denied=type(reader.is_access_denied_error)=="function"
+            and reader.is_access_denied_error(detail)==true or false
+        logger.warn("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=network_fetch", "book=", book_arg.bookId, "chapter=", uid,
+            "access_denied=", tostring(access_denied),
+            "error=", U.first_line(detail,160))
+        return nil, nil, "source_network_fetch_failed:" .. detail
+    end
 
     local coord_html = type(state) == "table" and tostring(state.coord_html or "") or ""
     if coord_html == "" then coord_html = tostring(downloaded or "") end
-    if coord_html == "" then return nil, nil, "coord_html_missing" end
+    if coord_html == "" then
+        logger.warn("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=network_fetch", "book=", book_arg.bookId, "chapter=", uid,
+            "empty_source=true")
+        return nil, nil, "coord_html_missing"
+    end
     if #coord_html > MAX_SOURCE_BYTES then return nil, nil, "coord_html_too_large" end
 
+    logger.info("[MiuRead][ProgressSourceDiagnostic]",
+        "stage=network_fetch", "book=", book_arg.bookId, "chapter=", uid,
+        "source_bytes=", tostring(#coord_html), "source_kind=network_refresh")
     local write_path = paths[1]
     if write_path then pcall(U.atomic_write, write_path, coord_html, true) end
     return coord_html, false, nil, {kind="network_refresh", path=write_path, version=version}
@@ -308,7 +336,24 @@ local function locate_single(reader, record, anchor, options)
     end
 
     local located, locate_error = locate_anchor(map, anchor)
-    if not located then return nil, locate_error end
+    if not located then
+        logger.warn("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=anchor_locate",
+            "book=", tostring(type(record.book)=="table" and (record.book.book_id or record.book.bookId) or ""),
+            "chapter=", tostring(anchor.chapter_uid or ""),
+            "error=", tostring(locate_error or "not_found"),
+            "cache_kind=", tostring(cache_meta and cache_meta.kind or "unknown"),
+            "cache_hit=", tostring(cache_hit==true),
+            "source_bytes=", tostring(#coord_html),
+            "anchor_chars=", tostring(anchor.anchor_chars or 0),
+            "anchor_kind=", tostring(anchor.anchor_kind or ""),
+            "anchor_cross_chapter=", tostring(anchor.anchor_cross_chapter==true),
+            "anchor_title_nearby=", tostring(anchor.anchor_contains_chapter_title==true),
+            "anchor_start_toc=", tostring(anchor.anchor_start_toc_index or "-"),
+            "anchor_end_toc=", tostring(anchor.anchor_end_toc_index or "-"),
+            "network_allowed=", tostring(options.cache_only~=true))
+        return nil, locate_error
+    end
 
     local within = U.clamp(located.norm_before / located.norm_total, 0, 1)
     -- Keep the old word-space candidate only for progress/fallback diagnostics.
@@ -440,6 +485,27 @@ local function catalog_row(catalog, wanted_uid, wanted_idx)
     return selected
 end
 
+local function remote_search_anchor(map, text_index)
+    local runes=type(map)=="table" and map.text_runes or nil
+    if type(runes)~="table" or tonumber(text_index)==nil then return nil end
+    local start=math.max(1,math.floor(tonumber(text_index) or 1))
+    local out={}
+    local visible=0
+    for i=start,math.min(#runes,start+96) do
+        local r=tostring(runes[i] or "")
+        if r~="*" then
+            out[#out+1]=r
+            if not r:match("%s") then visible=visible+1 end
+        end
+        if visible>=36 then break end
+    end
+    local text=U.trim(table.concat(out):gsub("%s+"," "))
+    if text=="" then return nil end
+    -- A short content anchor is enough to find the local CREngine XPointer,
+    -- while keeping search cost bounded on large books.
+    return U.utf8_truncate(text,56)
+end
+
 local function nearest_text_index(map, html_boundary)
     local runes = type(map) == "table" and map.runes or nil
     local html_to_text = type(map) == "table" and map.html_to_text or nil
@@ -507,6 +573,8 @@ function M.remoteProgress(reader, record, remote, catalog)
     out.raw_percent = tonumber(out.raw_percent or out.percent)
     out.percent = percent
     out.calculated_percent = percent
+    out.canonical_progress = percent
+    out.search_anchor_text = remote_search_anchor(map, text_index)
     out.chapter_uid = chapter_uid(selected.row) ~= "" and chapter_uid(selected.row) or uid
     out.chapter_idx = chapter_index(selected.row, selected.index)
     out.offset = math.max(0, math.floor(co + 0.5))

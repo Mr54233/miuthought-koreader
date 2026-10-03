@@ -162,6 +162,7 @@ local function merge_prefer(existing, incoming)
     local fields = {
         "title","author","cover","cover_path","description","intro","summary","format",
         "bookId","book_id","unified_source_id","progress","last_opened","added_at",
+        "cloudOrder","readUpdateTime","cloudUpdatedAt","finished","remote_finished","remote_progress","isTop",
         "source_state","external_payload","external_source",
         "archiveName","archiveNames","archiveNamesList","archiveKeys","inArchive",
     }
@@ -552,7 +553,7 @@ local SOURCE_LABELS = {
 }
 local TYPE_LABELS = {all="全部内容", book="书籍", article="文章"}
 local LOCAL_LABELS = {all="全部", available="本机已有", remote="尚未下载"}
-local SORT_LABELS = {recent="最近阅读", added="最近加入", title="书名", author="作者"}
+local SORT_LABELS = {cloud="云端顺序", recent="最近阅读", added="最近加入", title="书名", author="作者"}
 
 function M.source_labels() return SOURCE_LABELS end
 function M.type_labels() return TYPE_LABELS end
@@ -583,7 +584,7 @@ function M.apply(rows, state, mode)
     local source = tostring(state.source or "all")
     local kind = tostring(state.kind or "all")
     local locality = tostring(state.locality or "all")
-    local sort = tostring(state.sort or "recent")
+    local sort = tostring(state.sort or (mode=="shelf" and "cloud" or "recent"))
     local filtered = {}
     for _, row in ipairs(rows) do
         local source_ok = source == "all" or canonical_source(row) == source
@@ -596,6 +597,21 @@ function M.apply(rows, state, mode)
         end
     end
     table.sort(filtered, function(a,b)
+        if sort == "cloud" then
+            local as,bs=canonical_source(a),canonical_source(b)
+            local aw,bw=as=="weread",bs=="weread"
+            if aw~=bw then return aw end
+            if aw and bw then
+                local ao,bo=tonumber(a.cloudOrder),tonumber(b.cloudOrder)
+                if ao~=nil and bo~=nil and ao~=bo then return ao<bo end
+                if (ao~=nil)~=(bo~=nil) then return ao~=nil end
+                local at,bt=tonumber(a.readUpdateTime or a.cloudUpdatedAt or 0) or 0,tonumber(b.readUpdateTime or b.cloudUpdatedAt or 0) or 0
+                if at~=bt then return at>bt end
+            end
+            local av,bv=tonumber(a.last_opened) or 0,tonumber(b.last_opened) or 0
+            if av~=bv then return av>bv end
+            return trim(a.title):lower()<trim(b.title):lower()
+        end
         if sort == "title" then return trim(a.title):lower() < trim(b.title):lower() end
         if sort == "author" then
             local aa,ba=trim(a.author):lower(),trim(b.author):lower()

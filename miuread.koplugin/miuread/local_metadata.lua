@@ -1,9 +1,10 @@
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local U = require("miuread.util")
+local Json = require("miuread.json")
 
 local LocalMetadata = {}
-local METADATA_EXTRACTOR_VERSION = 5
+local METADATA_EXTRACTOR_VERSION = 6
 
 local function trim(value)
     return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -38,55 +39,6 @@ local function normalize_progress(value)
     return value
 end
 
-local function codepoint_to_utf8(code)
-    code = tonumber(code)
-    if not code or code < 0 or code > 0x10FFFF then return "" end
-    local ok, util = pcall(require, "util")
-    if ok and util and type(util.unicodeCodepointToUtf8) == "function" then
-        return util.unicodeCodepointToUtf8(code) or ""
-    end
-    if code < 0x80 then
-        return string.char(code)
-    elseif code < 0x800 then
-        return string.char(0xC0 + math.floor(code / 0x40), 0x80 + code % 0x40)
-    elseif code < 0x10000 then
-        return string.char(
-            0xE0 + math.floor(code / 0x1000),
-            0x80 + math.floor(code / 0x40) % 0x40,
-            0x80 + code % 0x40)
-    end
-    return string.char(
-        0xF0 + math.floor(code / 0x40000),
-        0x80 + math.floor(code / 0x1000) % 0x40,
-        0x80 + math.floor(code / 0x40) % 0x40,
-        0x80 + code % 0x40)
-end
-
--- util.htmlEntitiesToUtf8 only runs when htmlToPlainTextIfHtml treats the
--- string as HTML. A dc:title of bare &#xHHH; references is not HTML, so those
--- entities used to leak through as visible garbage.
-local function decode_numeric_entities(value)
-    value = tostring(value or "")
-    value = value:gsub("&#(%d+);", function(dec)
-        return codepoint_to_utf8(tonumber(dec))
-    end)
-    value = value:gsub("&#[xX](%x+);", function(hex)
-        return codepoint_to_utf8(tonumber(hex, 16))
-    end)
-    return value
-end
-
--- Title/author/publisher are plain XML text after entity decode. Never run
--- htmlToPlainTextIfHtml on them: it strips "<...>" and eats titles such as
--- "人生<哲学>".
-local function xml_text(value)
-    value = trim(value)
-    if value == "" then return nil end
-    value = tostring(value):gsub("%s+", " ")
-    return trim(value) ~= "" and trim(value) or nil
-end
-
--- description/summary may contain HTML fragments; keep the old cleaner.
 local function plain_text(value)
     value = trim(value)
     if value == "" then return nil end
@@ -115,17 +67,48 @@ local function shell_read(command, limit)
     return data
 end
 
-local function strip_cdata(value)
-    value = tostring(value or "")
-    value = value:gsub("^%s*<!%[CDATA%[", ""):gsub("%]%]>%s*$", "")
+local function codepoint_to_utf8(code)
+    code=tonumber(code)
+    if not code or code<0 or code>0x10FFFF then return "" end
+    local ok,util=pcall(require,"util")
+    if ok and util and type(util.unicodeCodepointToUtf8)=="function" then
+        return util.unicodeCodepointToUtf8(code) or ""
+    end
+    if code<0x80 then return string.char(code) end
+    if code<0x800 then return string.char(0xC0+math.floor(code/0x40),0x80+code%0x40) end
+    if code<0x10000 then
+        return string.char(0xE0+math.floor(code/0x1000),0x80+math.floor(code/0x40)%0x40,0x80+code%0x40)
+    end
+    return string.char(0xF0+math.floor(code/0x40000),0x80+math.floor(code/0x1000)%0x40,
+        0x80+math.floor(code/0x40)%0x40,0x80+code%0x40)
+end
+
+local function decode_numeric_entities(value)
+    value=tostring(value or "")
+    value=value:gsub("&#(%d+);",function(dec) return codepoint_to_utf8(tonumber(dec)) end)
+    value=value:gsub("&#[xX](%x+);",function(hex) return codepoint_to_utf8(tonumber(hex,16)) end)
     return value
 end
 
+local function strip_cdata(value)
+    value=tostring(value or "")
+    return value:gsub("^%s*<!%[CDATA%[",""):gsub("%]%]>%s*$","")
+end
+
 local function xml_unescape(value)
-    value = strip_cdata(value)
-    value = decode_numeric_entities(value)
+    value=decode_numeric_entities(strip_cdata(value))
     return value:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"')
         :gsub("&apos;", "'"):gsub("&amp;", "&")
+end
+
+-- OPF identity fields are XML text, not HTML. Running title/author through the
+-- HTML cleaner can eat literal angle-bracket text such as "人生<哲学>".
+local function xml_text(value)
+    value=trim(value)
+    if value=="" then return nil end
+    value=tostring(value):gsub("%s+"," ")
+    value=trim(value)
+    return value~="" and value or nil
 end
 
 local function xml_value(source, names)
@@ -136,6 +119,55 @@ local function xml_value(source, names)
         if value and value ~= "" then return xml_unescape(value) end
     end
     return nil
+end
+
+local function metadata_fragment(value)
+    local text = tostring(value or ""):lower()
+    return text:find("<rdf:", 1, true) ~= nil
+        or text:find("<dc:", 1, true) ~= nil
+        or text:find("<?xml", 1, true) ~= nil
+        or text:find("xml:lang=", 1, true) ~= nil
+end
+
+local function manifest_text(value)
+    local kind = type(value)
+    if kind ~= "string" and kind ~= "number" then return nil end
+    local text = plain_text(value)
+    if text and not metadata_fragment(text) then return text end
+    return nil
+end
+
+local function manifest_author(value)
+    local kind = type(value)
+    if kind == "string" or kind == "number" then
+        local text = authors_text(value)
+        if text and not metadata_fragment(text) then return text end
+        return nil
+    end
+    if kind ~= "table" then return nil end
+    local parts = {}
+    for index = 1, math.min(#value, 16) do
+        local part = manifest_text(value[index])
+        if part then parts[#parts + 1] = part end
+    end
+    return #parts > 0 and table.concat(parts, "、") or nil
+end
+
+local function read_miuread_manifest(filepath)
+    if tostring(filepath):lower():sub(-5) ~= ".epub" then return nil end
+    local raw = shell_read("unzip -p " .. U.shell_quote(filepath) .. " OEBPS/miuread.json 2>/dev/null")
+    if not raw or raw == "" then return nil end
+    local ok, value = pcall(Json.decode, raw)
+    if not ok or type(value) ~= "table" then return nil end
+    local book_id = trim(value.book_id or value.bookId)
+    local schema = tonumber(value.schema) or 0
+    if book_id == "" or schema < 1 then return nil end
+    return {
+        book_id = book_id,
+        schema = schema,
+        title = manifest_text(value.title),
+        author = manifest_author(value.author or value.authors),
+    }
 end
 
 local function read_epub_package(filepath, out)
@@ -152,6 +184,11 @@ local function read_epub_package(filepath, out)
     local publisher = xml_text(xml_value(opf, {"publisher"}))
     local language = xml_text(xml_value(opf, {"language"}))
     local isbn = find_isbn(xml_value(opf, {"identifier", "isbn"}))
+    local source = xml_text(xml_value(opf, {"source"}))
+    local package_info = {
+        title = title, author = author,
+        is_miuread = type(source) == "string" and source:find("miuread://book/", 1, true) == 1,
+    }
     if not isbn then
         for value in opf:gmatch("<[%w_%-:]*identifier[^>]*>(.-)</[%w_%-:]*identifier>") do
             isbn = find_isbn(xml_unescape(value))
@@ -197,9 +234,9 @@ local function read_epub_package(filepath, out)
     end
     if out.title or out.author or out.description or out.publisher or out.category then
         out.metadata_source = out.metadata_source or "epub_package"
-        return true
+        return true, package_info
     end
-    return false
+    return false, package_info
 end
 
 local function safe_hash(value)
@@ -278,12 +315,13 @@ local function custom_cover(filepath)
     return nil
 end
 
-local function apply_props(out, props)
+local function apply_props(out, props, options)
     if type(props) ~= "table" then return end
+    options = type(options) == "table" and options or {}
     local title = trim(props.title or props.Title)
-    if title ~= "" then out.title = title end
+    if title ~= "" and not (options.reject_markup and metadata_fragment(title)) then out.title = title end
     local authors = authors_text(props.authors or props.author or props.Author)
-    if authors then out.author = authors end
+    if authors and not (options.reject_markup and metadata_fragment(authors)) then out.author = authors end
     local series = trim(props.series or props.Series)
     if series ~= "" then out.series = series end
     local language = trim(props.language or props.Language)
@@ -334,15 +372,22 @@ end
 
 local function read_custom_metadata(filepath, out)
     local ok, DocSettings = pcall(require, "docsettings")
-    if not ok or not DocSettings or type(DocSettings.findCustomMetadataFile) ~= "function" then return end
+    if not ok or not DocSettings or type(DocSettings.findCustomMetadataFile) ~= "function" then return {} end
     local found_ok, metadata_file = pcall(DocSettings.findCustomMetadataFile, DocSettings, filepath)
-    if not found_ok or not metadata_file or not file_exists(metadata_file) then return end
+    if not found_ok or not metadata_file or not file_exists(metadata_file) then return {} end
     local open_ok, settings = pcall(DocSettings.openSettingsFile, metadata_file)
-    if not open_ok or not settings then return end
+    if not open_ok or not settings then return {} end
     local props_ok, props = pcall(settings.readSetting, settings, "doc_props")
     if props_ok then apply_props(out, props) end
     local custom_ok, custom = pcall(settings.readSetting, settings, "custom_props")
-    if custom_ok and type(custom) == "table" then apply_props(out, custom) end
+    if custom_ok and type(custom) == "table" then
+        apply_props(out, custom)
+        return {
+            title = trim(custom.title or custom.Title) ~= "" and trim(custom.title or custom.Title) or nil,
+            author = authors_text(custom.authors or custom.author or custom.Author),
+        }
+    end
+    return {}
 end
 
 local function read_bim(filepath, cache_dir, out)
@@ -360,7 +405,7 @@ local function read_bim(filepath, cache_dir, out)
         publisher = info.publisher,
         pages = info.page_count or info.pages,
         isbn = info.isbn or info.ISBN or info.identifier,
-    })
+    }, {reject_markup=true})
     if info.cover_bb then
         out.cover_path = write_cover(info.cover_bb, cache_dir, filepath) or out.cover_path
         if info.cover_bb.free then pcall(info.cover_bb.free, info.cover_bb) end
@@ -400,7 +445,7 @@ local function read_document(filepath, cache_dir, out)
             local loaded = document:loadDocument(false)
             if loaded == false then loaded_ok = false; return end
         end
-        if type(document.getProps) == "function" then apply_props(out, document:getProps()) end
+        if type(document.getProps) == "function" then apply_props(out, document:getProps(), {reject_markup=true}) end
         if not out.pages and not document.loadDocument and type(document.getPageCount) == "function" then
             local pages = tonumber(document:getPageCount())
             if pages and pages > 0 then out.pages = math.floor(pages) end
@@ -442,8 +487,20 @@ function LocalMetadata.read(filepath, cache_dir, options)
     }
     out.cover_path = custom_cover(filepath)
     read_sidecar(filepath, out)
-    read_custom_metadata(filepath, out)
-    read_epub_package(filepath, out)
+    local custom = read_custom_metadata(filepath, out)
+    local _, package_info = read_epub_package(filepath, out)
+    package_info = type(package_info) == "table" and package_info or {}
+    local lower_path = filepath:lower():gsub("\\", "/")
+    local manifest = (package_info.is_miuread == true or lower_path:find("/miuread/", 1, true))
+        and read_miuread_manifest(filepath) or nil
+    local miuread_generated = manifest ~= nil or package_info.is_miuread == true
+    local protected_title, protected_author
+    if miuread_generated then
+        protected_title = custom.title or (manifest and manifest.title) or package_info.title
+        protected_author = custom.author or (manifest and manifest.author) or package_info.author
+        if protected_title then out.title = protected_title end
+        if protected_author then out.author = protected_author end
+    end
 
     if options.use_bim ~= false then read_bim(filepath, cache_dir, out) end
     local document_state
@@ -476,6 +533,11 @@ function LocalMetadata.read(filepath, cache_dir, options)
         out.metadata_retry_after = 0
         out.metadata_error = ""
     end
+    if miuread_generated then
+        if protected_title then out.title = protected_title end
+        if protected_author then out.author = protected_author end
+        if protected_title or protected_author then out.metadata_source = "miuread_epub" end
+    end
     out.metadata_extractor_version = METADATA_EXTRACTOR_VERSION
     return out
 end
@@ -489,18 +551,10 @@ function LocalMetadata.merge(book, metadata)
             changed = true
         end
     end
-    -- Account shelf titles (WeRead API) already match library.lua's
-    -- `remote.title or local` policy and must not be replaced by OPF text.
-    -- Local-only books still let OPF correct a filename-derived title.
-    local function set_identity(key, value)
-        if value == nil or value == "" then return end
-        if book.in_account_shelf == true and book[key] ~= nil and book[key] ~= "" then
-            return
-        end
-        if book[key] ~= value then
-            book[key] = value
-            changed = true
-        end
+    local function set_identity(key,value)
+        if value==nil or value=="" then return end
+        if book.in_account_shelf==true and book[key]~=nil and book[key]~="" then return end
+        set(key,value)
     end
     set_identity("title", metadata.title)
     set_identity("author", metadata.author)

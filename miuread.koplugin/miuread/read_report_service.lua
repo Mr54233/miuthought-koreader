@@ -2,6 +2,7 @@ local Json = require("miuread.json")
 local U = require("miuread.util")
 local Adapter = require("miuread.legacy_adapter_worker")
 local Config = require("miuread.config")
+local SubprocessHygiene = require("miuread.subprocess_hygiene")
 
 local Service = {}
 
@@ -343,6 +344,7 @@ function Service.run(job)
             out.writer_barrier_seq=tonumber(control.writer_barrier_seq or 0) or 0
             local uncertain = result.uncertain == true or tostring(result.error_kind or "") == "unconfirmed"
             local kind = result.accepted and nil or (uncertain and "unconfirmed" or classify_error(result.error_kind,result.error))
+            if kind == "transport" then SubprocessHygiene.reset_resolver() end
             if result.accepted then
                 consecutive_failures = 0
                 consecutive_unconfirmed = 0
@@ -359,14 +361,23 @@ function Service.run(job)
                 consecutive_unconfirmed = 0
                 blocked = kind == "authentication"
             end
+            local drop_time = time_only and Config.READ_TIME_BEST_EFFORT==true
+                and not result.accepted and not uncertain
+                and consecutive_failures >= math.max(2,tonumber(Config.READ_TIME_MAX_ATTEMPTS) or 2)
             out.generation = generation
             out.seq = sequence
-            out.state = result.accepted and "waiting" or (uncertain and "unconfirmed" or "error")
+            out.state = drop_time and "dropped" or (result.accepted and "waiting" or (uncertain and "unconfirmed" or "error"))
             out.uncertain = uncertain or nil
             out.error_kind = kind or result.error_kind
-            out.paused = blocked
-            local delay = (result.accepted or uncertain) and interval
-                or retry_delay(kind, consecutive_failures, interval)
+            out.paused = drop_time and false or blocked
+            if drop_time then
+                out.dropped_error=tostring(result.error or kind or "retry budget exhausted")
+                carry_remaining=0
+                blocked=false
+                consecutive_failures=0
+            end
+            local delay = drop_time and interval or ((result.accepted or uncertain) and interval
+                or retry_delay(kind, consecutive_failures, interval))
             out.consecutive_failures = consecutive_failures
             out.unconfirmed_count = consecutive_unconfirmed
             out.context_refresh_requested = report_job.force_context == true or nil
@@ -409,15 +420,25 @@ function Service.run(job)
         consecutive_failures = consecutive_failures + 1
         consecutive_unconfirmed = 0
         local kind=classify_error(nil,result)
+        if kind == "transport" then SubprocessHygiene.reset_resolver() end
         blocked = kind == "authentication"
-        local delay = retry_delay(kind, consecutive_failures, interval)
+        local drop_time=time_only and Config.READ_TIME_BEST_EFFORT==true
+            and consecutive_failures >= math.max(2,tonumber(Config.READ_TIME_MAX_ATTEMPTS) or 2)
+        local dropped_error=tostring(result or "read report service failed")
+        if drop_time then
+            carry_remaining=0
+            blocked=false
+            consecutive_failures=0
+        end
+        local delay = drop_time and interval or retry_delay(kind, consecutive_failures, interval)
         local due = final_flush and 0 or (completed_at + delay)
         write_service_status({
             generation = generation,
             seq = sequence,
-            state = "error",
+            state = drop_time and "dropped" or "error",
             accepted = false,
-            error = tostring(result or "read report service failed"),
+            error = dropped_error,
+            dropped_error = drop_time and dropped_error or nil,
             error_kind = kind,
             retry_delay = delay,
             consecutive_failures = consecutive_failures,
@@ -523,6 +544,7 @@ function Service.run(job)
                         -- counted or replayed.
                         next_due = now + first_delay
                         last_report_at = now
+                        SubprocessHygiene.reset_resolver()
                     end
                     write_context()
                     write_service_status({
@@ -580,6 +602,7 @@ function Service.run(job)
                     local now = os.time()
                     last_report_at = now
                     next_due = now + first_delay
+                    SubprocessHygiene.reset_resolver()
                 end
             end
 

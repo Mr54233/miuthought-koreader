@@ -3,6 +3,7 @@ local Device = require("device")
 local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local OverlapGroup = require("ui/widget/overlapgroup")
 local Size = require("ui/size")
@@ -20,6 +21,8 @@ local Toast = InputContainer:extend{
     modal = false,
     _timeout_func = nil,
     on_close_callback = nil,
+    action_callback = nil,
+    action_text = "",
     closed = false,
     _closing_with_refresh = false,
 }
@@ -83,6 +86,9 @@ function Toast:init()
     local x = math.max(side_margin, math.floor((screen_w - frame_size.w) / 2))
     local y = math.max(side_margin, screen_h - frame_size.h - bottom_margin)
     self.popup_dimen = Geom:new{x = x, y = y, w = frame_size.w, h = frame_size.h}
+    if self.action_callback then
+        self.ges_events={TapAction={GestureRange:new{ges="tap",range=self.popup_dimen}}}
+    end
     self.frame.overlap_offset = {x, y}
     self[1] = OverlapGroup:new{
         dimen = Screen:getSize(),
@@ -100,6 +106,16 @@ function Toast:_close()
     -- UI waveform for the small former-toast rectangle so menu pixels cannot
     -- remain as ghosting after the timer fires.
     UIManager:close(self, "ui", region)
+    return true
+end
+
+
+function Toast:onTapAction()
+    if not self.action_callback then return false end
+    local callback=self.action_callback
+    self.action_callback=nil
+    self:_close()
+    pcall(callback)
     return true
 end
 
@@ -165,8 +181,10 @@ function M.show(opts)
     local toast
     toast = Toast:new{
         title = opts.title,
-        text = opts.text,
+        text = tostring(opts.text or "")..((opts.action_callback and tostring(opts.action_text or "")~="") and (" · "..tostring(opts.action_text)) or ""),
         timeout = opts.timeout or 3,
+        action_callback = opts.action_callback,
+        action_text = opts.action_text,
         on_close_callback = function()
             if active_toast == toast then active_toast = nil end
         end,

@@ -69,7 +69,11 @@ do
     end
     assert(not pcall(api.en_read,api,book_id,'2',{{uid=2},{uid=3},{uid=4}}) and #calls==3,'whole-book generation was allowed')
     assert(not pcall(api.en_read,api,book_id,'',{{uid=2}}) and #calls==3)
-    assert(not pcall(api.translation_member_summary,api,'ordinary-book') and #calls==3)
+    -- beta.8: ordinary numeric WeRead books use the same official capability
+    -- probe instead of being rejected locally because they are not CB_ uploads.
+    assert(api:translation_member_summary('748277').isPaying==1 and #calls==4,'numeric book id was rejected before official service probe')
+    assert(calls[4].opt.headers.Referer:find('748277',1,true),'numeric book id did not reach official reader context')
+    assert(not pcall(api.translation_member_summary,api,'') and #calls==4,'empty translation book id reached network')
     local attempts,recoveries=0,0
     function http:get_json()
         attempts=attempts+1
@@ -102,6 +106,9 @@ local function options(overrides)
     for key,value in pairs(overrides or {}) do opt[key]=value end
     return opt
 end
+assert(Generation.friendly_error('translation not supported for this book'):find('暂不支持',1,true),
+    'unsupported official capability is not translated into a safe user message')
+
 for _,summary in ipairs({{isPaying=false},{isPaying=0},{isPaying='0'},{},{freeTrial=true}}) do
     local api=mock_api(summary,{})
     local ok,err=pcall(Generation.prepare,api,book_id,chapters,'2',options())

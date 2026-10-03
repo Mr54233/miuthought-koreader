@@ -1,17 +1,17 @@
 {
-  "version": "5.8.0-beta.22",
-  "name": "觅阅 · 微信读书助手 5.8.0-beta.22 内测版",
-  "channel": "beta",
+  "version": "5.9.0",
+  "name": "觅阅 · 微信读书助手 5.9.0",
+  "channel": "stable",
   "package_type": "full",
-  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip",
+  "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0/miuread-v5.9.0-full.zip",
   "package_urls": [
-    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip",
-    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip",
-    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip",
-    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.8.0-beta.22/miuread-v5.8.0-beta.22-full.zip"
+    "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0/miuread-v5.9.0-full.zip",
+    "https://ghfast.top/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0/miuread-v5.9.0-full.zip",
+    "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0/miuread-v5.9.0-full.zip",
+    "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0/miuread-v5.9.0-full.zip"
   ],
-  "size": 1966729,
-  "sha256": "837bd9512794825441a4d3865c97151f7cf63e9744d3a0781115bca09b17f43e",
-  "summary": "正式纳入微信读书下载连接复用优化，减少整本下载过程中重复 TCP/TLS 握手，同时保持非下载网络行为、同步精度与后台稳定性不变。",
-  "notes": "合入 PR #73 下载连接复用：仅下载目录、阅读页上下文和章节正文分片显式启用 keepalive=true；登录、书架、阅读进度、阅读时长、批注与评论点赞继续使用原有网络行为。连接仅在响应可明确界定、对端未要求 close 且交换完整时回池，空闲 25 秒过期、单连接最多复用 64 次；网络恢复和限流冷却前、下载完成/取消/异常退出后主动清空连接池。复用连接失效时仅 GET/HEAD 可在未收到响应字节时透明重建一次，POST 不在连接池层重放。流式文件仍走独立连接，Config.HTTP_KEEPALIVE=false 可完整回退。Schema 保持 135，beta.21 在线点赞、beta.20 书架恢复与 100 本提醒、beta.19 阅读时长/SAFE pending/精确进度等全部保留。"
+  "size": 2024591,
+  "sha256": "fabe4c6ab2e92b1c85d49c3f1703e577ff3894486b1512d5fec6c3ae3af33341",
+  "summary": "5.9.0 正式收口多设备精确进度同步、统一恢复与网络就绪保护，并整合外文翻译、扩展中心及 5.9 beta 阶段的可靠性修复。",
+  "notes": "5.9.0 正式版基于 5.9.0-beta.12 收口：保留 verified anchor + chapter_uid/co 精确验收、write fence、verify-first 与安全 recovery；旧 source cache 失效时真正刷新目标章节；reading-time writer 使用 KOReader 子进程完成状态减少误超时；同时正式纳入外文翻译、统一手动同步、wake online-ready、扩展中心及 5.8/5.9 阶段的稳定性改进。Schema 136。"
 }

@@ -50,6 +50,15 @@ function M.friendly_error(error_value)
     if message:find("[MiuReadTranslationContentPending]",1,true) then
         return "微信读书的译文章节尚未准备好，已停止本次更新并保留原文件。稍后再次切换即可重试。"
     end
+    if message:find("[MiuReadTranslationUnsupported]",1,true)
+        or message:find("暂不支持",1,true) or message:find("不支持翻译",1,true)
+        or message:find("无法翻译",1,true) or message:find("翻译不可用",1,true)
+        or lower:find("translation unsupported",1,true)
+        or lower:find("translation not supported",1,true)
+        or lower:find("translation unavailable",1,true)
+        or lower:find("not available for this book",1,true) then
+        return "当前书籍暂不支持微信读书官方翻译，原文可以继续阅读。"
+    end
     return nil
 end
 

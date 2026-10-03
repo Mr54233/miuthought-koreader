@@ -1,18 +1,143 @@
-## 外文翻译与书内链接修复 - 2026-09-30
+## 5.9.0 - 2026-10-04
 
-- 微信读书上传书新增“原文 / 双语 / 仅译文”，接入官方付费会员校验、译文开关及当前章/下一章生成状态查询；轮询、登录恢复和重试均有上限，不申请试用或整本翻译。
-- 已有本地译文通过 CSS 切换并按书籍保存显示模式；仅隐藏已验证的原文与译文段落对，未译段落保留原文。兼容 EPUB 导入后的 ID 改写、特殊 ID 和微信返回的可恢复标签错误。
-- 修复服务器状态先于正文更新、浏览器正文分片为空及翻译刷新把正常章节误判成空目录页的问题；重新获取目标章节并验证实际译文，保留其他章节缓存。
-- 关书后安装新文件前，验证旧章节与图片资源，并按原文 DOM 文本和结构迁移阅读位置及划线。无 ID 或 ID 变化时使用唯一相同段落匹配；歧义、原文变化、保存或安装失败时保留原文件。迁移日志支持断电后的旧/新文件恢复，已有待安装译文复用，避免重复下载。
-- 新增按书籍保存的译文正文大小（80%–180%）；修复 PDF 上传书中中文继承固定字号、英文随阅读字号放大的差异，匹配英文段落的相对字号。
-- 统一翻译与书内链接回归入口，覆盖正文获取、CSS 显示、阅读数据迁移及文件安装；复用解析结果和生成的 CSS，降低内存占用和重复样式构建。
-- 修复书内链接校验把合法外部参考链接或评论链接中的 `&amp;` 反复转义，导致下载提示“仍有可修复但尚未稳定写入的内部链接”的问题；按真实属性位置改写 `href`，保留 `data-href` 与引号中的其他文字。二次校验继续保留，失败日志增加具体章节和待修复链接。
+- 正式收口 5.9 beta.1–beta.12 的多设备阅读进度体系：以 verified anchor、真实阅读事件时间和精确 `chapter_uid + co` 进行 latest-wins 对账，保留 conflict、write fence、verify-first 与安全 recovery，避免旧本机位置误覆盖较新的云端进度。
+- 统一主页快捷同步、同步状态和进度失败页的手动 progress recovery；设备唤醒/网络恢复后等待 online-ready 再 reconcile，并保留 `pending_send / submitted_unverified` 的安全语义。
+- 加固精确位置可靠性：旧 source cache 已无法定位 anchor 时，recovery 会真正刷新目标章节 `coord_html`；无法精确确认时继续 rollback/fail closed，不使用近似位置冒充成功。
+- 改进 reading-time writer 抢占：使用 KOReader 子进程完成状态辅助判断，减少已退出 worker 被误判存活造成的 `time_writer_preempt_timeout`，同时保持单 writer 互斥。
+- 外文翻译支持原文/双语/仅译文、官方译文生成和数字 bookId；翻译模块保持低耦合，安全替换 EPUB 并迁移阅读位置/划线，失败不破坏原书。
+- 延续 5.8 系列下载、书架、扩展中心、批注/评论、主页性能与后台稳定性改进；Schema 正式升级并固定为 136。
 
-## 5.7.5 - 2026-09-08
+## 5.9.0-beta.12 - Exact Source Refresh & Writer Completion Fix
 
-- release: 合并 5.8.0-beta.21 到 main (#106)
-- release: 合并微信读书下载连接复用优化到 main (#108)
-- release: 合并 5.8.0-beta.22 到 main (#109)
+- 修复精确位置 recovery 的“假网络刷新”：本地 exact/legacy source cache 已经无法定位 anchor 时，network recovery 会显式绕过旧缓存并重新获取当前章节 `coord_html`，成功后覆盖 exact cache；若新源仍无法定位则继续 fail closed，不上传近似位置。
+- 修复 reading-time writer 抢占的 zombie/未 reap 判定：在 `kill(pid, 0)` 之外使用 KOReader `FFIUtil.isSubProcessDone(pid, false)` 确认子进程已经完成，减少已退出 writer 被误判为存活而触发 `time_writer_preempt_timeout`。
+- 保留 beta.11 的统一手动 progress recovery、wake online-ready gate、pending/verify 安全语义、rollback/fence、translation 与 Release 流程；不采用 immediate time-writer detach。
+- Schema 保持 136。
+
+## 5.9.0-beta.11 - Unified Manual Progress Recovery & Wake Network Readiness
+
+- 以 beta.10 为基线，主页短按“同步”、同步状态“全部重新同步”和进度失败页“全部重新同步”统一进入 `_sync_progress_full_recovery()`；入口 `source` 只用于诊断，不再因为 UI 路径不同而改变 progress recovery。
+- 所有手动同步在进入共享 progress recovery 前统一执行登录与 Wi-Fi radio gate；保留 `pending_send / submitted_unverified`、verify-first、安全重传和冲突保护，不通过 UI 路径绕过现有安全条件。
+- 手动同步即使主页缓存暂时显示 0 个失败项，也会先执行同一 progress verification/recovery pass，再依次处理 SAFE 阅读时间与批注，减少“主页单击无动作、二级菜单可恢复”的路径差异。
+- Kindle/设备唤醒后的阅读进度 reconcile 增加 online readiness gate：`NetworkConnected` 不再等同于 API 已可用，优先等待 `online=true`，无显式 online 字段时仅在稳定 `connected` 状态并经过额外 grace 后继续。
+- `network_restored` 与 `resume_recheck` 共用 `reader-progress-online` waiter，并增加 `[MiuRead][ResumeSync] waiting_network / network_online / reconcile_started / network_wait_timeout` 诊断日志。
+- 暂不采用另一个 beta.9 分支的 time-writer detach/SIGKILL 立即接管方案；`miuread/sync.lua` 保持 beta.10/beta.8 字节不变，继续保留现有 `time_writer_preempt_timeout` 防并发 writer 保护。
+- 完整保留 beta.10 的 translation 纯 Lua 顶层、数字 bookId 支持、先测试后建 tag 的 Release workflow 与 CHANGELOG 标题兼容。Schema 仍为 136。
+
+## 5.9.0-beta.10 - Translation Dependency & Release Reliability
+
+- 保留 beta.9 的主页短按同步状态刷新、共享 recovery pipeline 与 `[MiuRead][SyncAction]` 诊断日志；不修改 progress submit/verify、worker、resolver、reading-time daemon 或 `miuread/sync.lua`。
+- 修复翻译模块依赖边界：撤销 `translation.lua` 顶层 `require("miuread.util")`，避免纯 Lua/LuaJIT 翻译回归测试在加载模块时被迫依赖 KOReader `libs/libkoreader-lfs`。
+- `M.inspect()` 使用模块内纯 Lua `trim()` 校验 `book_id`；继续接受数字等所有非空 bookId，不恢复旧的 `CB_` 限制。
+- `miuread.util` 继续只在确实需要 `U.copy()` 等功能的迁移路径中按需加载，恢复 beta.5 已验证的低耦合结构。
+- Beta Release 保持“版本校验 → 完整回归测试 → 创建 tag → 打包/发布”的顺序，并继续兼容 CHANGELOG 的 ASCII `-` 与长破折号 `—` 标题。
+- 新增 beta.10 verifier，锁定 translation 顶层无 KOReader util 依赖、数字 bookId 能力与 release 测试先于 tag 的约束。Schema 仍为 136。
+
+## 5.9.0-beta.9 - Home Sync Entry Consistency & Diagnostics
+
+- 主页快捷“同步”在进入共享 `_sync_home_pending()` recovery pipeline 前，先强制执行 `_home_sync_summary(true)`，与长按“同步 → 同步状态”路径使用相同的前置状态刷新。
+- 不修改 progress submit/verify、UNSENT/SUBMITTED_UNVERIFIED、安全重传、worker 判定、remote/local resolver、clock-skew 或 reading-time daemon 核心算法；`miuread/sync.lua` 保持 beta.8 字节不变。
+- 为手动同步补充 `[MiuRead][SyncAction]` 诊断日志，记录入口 `source`、progress 可执行动作快照以及最终 `success / pending / conflict / blocked / busy` 结果。
+- 长按“同步 → 同步状态 → 全部重新同步”明确标记为 `source=sync_status_all`；进度失败页继续使用 `source=progress_issues`，便于下一份 crash 直接比较不同入口。
+- 修复翻译 EPUB 检查路径遗漏 `miuread.util` 本地引用导致的 `translation.lua:546: attempt to index global U`；翻译生成回归测试可继续执行到后续步骤。
+- 加固 Beta Release workflow：CHANGELOG 标题同时接受 ASCII `-` 与长破折号 `—`，并将完整 Lua/回归测试移动到创建 release tag 之前，避免测试失败留下未发布的版本 tag。
+- Schema 仍为 136。
+
+## 5.9.0-beta.8 — Home Refresh & Translation Capability Expansion
+
+- 主页快捷“刷新”现在只有一个行为：完整刷新微信书架、本地书库、已生成书籍关联、最近阅读状态与主页内容，随后执行整页 full refresh；删除“刷新”的长按菜单，避免“当前栏目/整个主页”两套语义。
+- “同步”保持 beta.7 原样，不修改 progress resolver、recovery、writer 优先级、remote jump 或 clock-skew 逻辑。
+- 外文翻译不再把 `CB_` 当作能力开关：所有有效 bookId 的微信读书可重排文本书都可进入“外文翻译”；已有 `.wr-translation` 的章节仍可离线切换原文/双语/仅译文。
+- 生成新译文时取消 API 层的 `CB_` 硬拒绝，数字 bookId 也会尝试微信读书官方会员翻译链路，由官方服务实际决定是否可用；非会员、书籍不支持、网络失败均保持原文和原 EPUB 不变。
+- 保留 #120 的当前章+下一章有界生成、待安装 EPUB、安全校验、阅读位置/划线迁移和 80%–180% 译文字号；Schema 仍为 136。
+
+## 5.9.0-beta.7 — Progress Sync Reliability & Clear Status
+
+- 阅读结束时最终阅读进度现在高于阅读时长：如果低优先级 ReadReport writer 仍占用共享接口，beta.7 会终止该时间 writer 并丢弃未确认的尾段秒数，让最终 chapter/co 立即进入进度提交，不再出现 `final progress parked behind time writer`。
+- 多设备时间戳的 clock-skew grace 从 120 秒缩短到 30 秒；超过 30 秒的明显新旧关系可直接由时间戳决定，30 秒内仍保留 conflict 防误覆盖。
+- 主页快捷“同步”、主页控制面板“同步”和进度失败页“全部重新同步”统一进入同一 recovery pipeline；用户主动点击时优先处理 durable progress，不再先等待同步摘要缓存。
+- 开书同步增加明确终态反馈：冲突、云端检查失败、云端精确坐标缺失和较新云端结果返回过晚都会明确提示；正常 aligned 仍保持轻量。
+- 保留 beta.6 的 session-scoped fence、UNSENT/SUBMITTED_UNVERIFIED 区分、remote scalarization、`local_read_event_at`、raw-percent 隔离和 StoreRepair；Schema 仍为 136。
+
+# Changelog
+
+## 5.9.0-beta.6 — Sync Regression Recovery & Minimal Reconciliation
+
+- Replaces beta.5 durable progress write fences with session-scoped one-shot protection so one failed cloud jump cannot permanently block future local uploads.
+- Recovers beta.5 `fenced` progress records at startup as explicit UNSENT snapshots.
+- UNSENT recovery now fetches current cloud progress and runs the resolver before any submit; it is never mistaken for an already-submitted verification task.
+- Scalarizes remote progress before async IPC to prevent `Recursive encoding of value` from cyclic runtime source graphs.
+- Persists `local_read_event_at` independently from exact chapter/co mapping, so a `source_anchor_not_found` failure no longer erases evidence that the user actually read locally.
+- If native remote source mapping is unavailable, falls back to approximate navigation only as a seed and still requires exact chapter/co verification before accepting the cloud position.
+- Retains beta.5 raw-percent isolation, terminal-progress guard, removal of `user_interacted -> local wins`, best-effort reading time, and beta.4 position-state StoreRepair.
+- Schema remains 136.
+
+## 5.9.0-beta.5
+
+- 重构开书进度对账为非阻塞轻量流程：先立即恢复本机页面，后台只读取一次云端 position metadata；已有精确本地快照时不再先跑完整 source mapping，同一本书 60 秒内仅对“已精确对齐”的缓存结果做读取 debounce。
+- 修复 beta.4 的危险 latest-wins 分支：`user_interacted` / 晚到云端不再直接变成 `local wins`。开书冻结 `open_local_snapshot`，优先依据可信 verified anchor 判断哪一端发生变化；双方都变化或无可靠 anchor 时再比较真实阅读事件时间，120 秒 clock-skew grace 内无法安全裁决则进入 conflict。
+- 新增持久化 progress write fence：remote fetch 未完成、remote newer、conflict、remote exact unresolved 等状态一律禁止周期、结束阅读和后台 retry 把本机位置写回云端；只有明确 `LOCAL_NEWER`、重新 aligned，或用户显式手动选择本机上传时才解除。
+- 本地 freshness 与阅读时长功能解耦：第一页恢复只建立 page baseline，不算新的阅读事件；之后真实翻页/跳转才更新本地阅读事件时间，即使用户关闭阅读时间同步也仍可正确参与 latest-wins。
+- `server_raw_percent` 从 canonical position 彻底降级：CloudAnchor、ReadReport 和 finished 判断优先使用 `chapter_uid + co` 映射得到的 canonical progress；服务器异常 `raw_percent=100` 不再把中间章节污染成 100%/finished。
+- 收敛 exact-co 定位：优先复用已验证 `chapter_uid + co -> XPointer` 缓存；普通跳转未精确命中后使用微信正文短 text anchor 在对应本地章节恢复 XPointer，再做 exact verify；percent correction 仅保留一次 bounded fallback，避免 964 -> 144 -> 759 一类振荡。
+- 阅读时间改为 best-effort：正常尝试一次，运行期空闲后最多再尝试一次；仍失败直接 drop，不再跨重启保存 SAFE time debt，也不再让阅读时间失败污染主页总体同步状态。beta.5 首启会清理 beta.4 遗留的 reading-time retry/failure 状态。
+- Schema 继续保持 136；beta.4 的 position-state 标量化与启动 StoreRepair 完整保留。翻译、Extension Center、下载系统、#117/#118 等非同步功能不做行为改动。
+
+## 5.9.0-beta.4
+
+- 修复 5.9 自动续读的崩溃：云端位置对象中的 `sources` 诊断图可能形成自引用，进入 `position_state` 后在下一次 `U.merge()` 触发 LuaJIT stack overflow；现在所有持久化位置状态都压缩为纯标量坐标，并在 merge 前清理旧状态。
+- 增加启动自愈：beta.1–beta.3 已写入的循环/膨胀 position snapshot 会在启动时自动压缩，Schema 继续保持 136，不要求用户清空设置或重新登录。
+- 修复首次/无共同锚点时的 latest-wins 误判：刚读取到的 `remote_observed` 不再被当成 `verified_anchor`；只有经过精确确认的历史坐标才能作为共同锚点，避免把旧本机位置错误上传覆盖更新的云端位置。
+- 开书同步保护的默认本机 fallback 从 2.5 秒延长到 6 秒，更符合“先确认最新位置再开始翻页”的交互；超时文案改为“云端响应较慢，已先使用本机位置；后台继续确认”。
+- 保留 beta.3 的 #120 外文翻译、Extension Center UX、#117/#118 增强修复和 `chapter_uid + co` 精确验收，不改变翻译/扩展安装协议。
+
+## 5.9.0-beta.3
+
+- 完整移植 #120 外文翻译：微信读书上传外文书支持原文、双语、仅译文三态，接入官方译文生成、会员检查、当前章/下一章生成与 80%–180% 译文字号。
+- 翻译 EPUB 使用安全替换：关闭书籍后验证章节、图片与书籍身份再安装，迁移 KOReader 阅读位置与划线；失败保留原 EPUB 和阅读数据，并保留 5.9 Schema 136 的 latest-wins/精确位置模型。
+- 保留并回归 #117/#118 的增强实现：剪贴板 table 修复、1%/100% 分域、假 100% 终态保护、XML entity/CDATA/身份字段及 MiuRead manifest/XMP 标题防污染均不回退。
+- 重做扩展中心更新发现：12 小时后台静默检查、24 小时可信状态缓存，网络失败不清除已知“有更新”；扩展中心按“可更新/全部最新/需要检查”真实状态显示。
+- 觅阅推荐列表不再显示目录或本机版本号，仅显示“已安装/有更新/下载中”等状态；版本只在详情页实时读取 GitHub。下载管理第一页固定提供“下载扩展 / 更新扩展 / 插件下载任务”。
+- 多个扩展有更新时提供“全部更新”，逐项复用现有官方 Release 解析、完整性校验、事务安装和失败回滚；单项失败会停止批量流程，但不会清除尚未处理的更新状态。
+- 普通整本下载继续复用 240 秒 book-scoped reader context；只有译文生成读取 fresh reader page，避免 #120 移植导致下载性能回退。Schema 继续为 136。
+
+## 5.9.0-beta.2
+
+- 修正 5.9 latest-wins 的 freshness 语义：仅仅读取、恢复或打开本地页面不再把 `captured_at` 当成新的阅读事件，避免技术性快照压过真正更新的云端位置。
+- 增加云端旧响应防回退：若并发/晚到响应带有明确更旧的服务器更新时间，保留已经观察到的更新云端坐标，不让旧响应覆盖或触发错误跳转。
+- 书架 resolved state 与开书解析统一使用事件级 `updated_at`，不再以“刚刚扫描到本地文件”的时间参与多设备新旧判断。
+- 加固 Beta Release：CHANGELOG 版本标题必须使用 `##`，错误时直接给出修复提示；发布前自动运行 5.9 beta.2 freshness/position regression verifier。
+- 保留 beta.1 的开书同步遮罩、2.5 秒本机 fallback、晚到云端防突跳、8 秒撤回、cloudOrder 默认排序以及 `chapter_uid + co` 精确验收。
+
+## 5.9.0-beta.1
+
+- 新增无感 latest-wins 阅读位置解析，取消普通开书的本机/云端选择框。
+- 新增开书同步遮罩、2.5 秒本机 fallback、10 秒 late-remote 安全窗口与用户交互保护。
+- 新增 8 秒自动定位撤回。
+- Schema 136 新增 position_state 双写迁移。
+- 微信书架默认云端顺序；读完状态与当前位置分离解析。
+- 保持 chapter_uid + co 精确验收，不恢复 percent-equivalent。
+
+## 5.8.0-beta.26
+
+- 修复 #111：评论与书摘复制按 KOReader 剪贴板 API 的普通函数签名传递字符串，不再把 `Device.input` table 写入剪贴板。
+- 加固 #115：微信读书 0–100 `progress` 与本地 0–1 ratio 分域处理；`1` 不再把 1% 误判为 100%；非最后有效章节禁止提交 100% 终态。
+- 收口 #107：补齐 OPF 数字实体、CDATA 与 XML identity 解析，保护微信/API 与 MiuRead manifest 标题；主页手动刷新可增量恢复仍在磁盘但丢失 Store 关联的已生成 EPUB。
+- 收口 #114：保留 chapter UID rescue + exact `chapter_uid + co` 验证，percent 仍只负责导航；多设备冲突提示显示本机/云端章节及云端更新时间。
+- 加固 #116：重型下载运行期间连续两次低内存采样后自动保存断点并 hibernate，不因单次内存抖动反复启停。
+- 保留 beta.25 的同步失败闭环、SAFE 阅读时间重试与严格精确定位。
+
+## 5.8.0-beta.25
+
+- 以 beta.24 为基线收口主页同步状态：用户界面不再暴露 `pending / awaiting confirmation / 待同步 / 待确认` 等内部状态，主页只显示“已同步 / 同步中 N / 同步失败 N”。内部仍保留细分状态与错误原因用于安全恢复和诊断。
+- 修复“主页显示同步失败但点击无动作”的闭环缺口：同步详情中的阅读进度、SAFE 阅读时间、划线、想法和书签均可进入对应处理；新增“全部重新同步”，按“进度 → 安全阅读时间 → 批注”顺序执行并在结束后强制重算主页同步汇总。
+- 阅读进度手动恢复改为 verify-first：对已提交或结果不明确的精确位置先回读微信云端；云端 `chapter_uid + co` 已一致时直接清除失败状态，只有明确不一致且本地保存了可重放精确快照时才重新提交，避免因 UI 残留状态重复写进度。
+- 补齐阅读时间主页重试：只把 `pending_report_safe=true` 的“明确尚未发出”秒数计入可重试失败，并通过兼容阅读时间上报链路重传；请求一旦可能已到达微信读书，即立即移出可重放池，禁止再次点击导致重复计时。
+- 登录恢复后会自动静默重试可安全恢复的失败项；主页手动刷新也会触发同一安全恢复链，不再要求用户重新打开书籍才能让旧失败继续处理。
+- 收紧精确进度成功判定：只要本地与云端都提供 `chapter_uid + co`，最终验证以这组坐标为权威；移除 `mapped_percent_equivalent` / 0.30% 比例近似判成功路径。原生 `wr_data_co` 仅保留 16 code-unit、其他坐标 12 的技术边界容差。
+- 百分比继续保留为导航和缺失精确坐标时的最后 fallback，但不能覆盖真实 `chapter_uid + co` 不一致。beta.24 的跨章节 chapter-UID rescue 继续保留：它只负责把 KOReader 拉回正确章节，之后仍必须重新计算精确坐标并验证。
+- 保留 beta.24 及之前的 Store 去重写盘、主页/退出阅读性能优化、DNS resolver 恢复、HTTP Keep-Alive、整本下载 reader-context/psvts 复用、评论与本地元数据兼容修复；Schema 继续保持 135。
+- 新增 `tools/verify_beta25.py`，覆盖版本一致性、全库 Lua 语法、既有回归以及 beta.25 的同步闭环、SAFE 阅读时间重试和严格精确定位不变量。当前验证结果：319 checks，0 failures。
 
 ## 5.8.0-beta.22
 

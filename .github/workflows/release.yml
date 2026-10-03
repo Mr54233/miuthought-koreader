@@ -35,7 +35,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Resolve and synchronize stable release identity
+      - name: Resolve stable release identity
         shell: bash
         run: |
           set -euo pipefail
@@ -45,64 +45,32 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
             RELEASE_TAG="v$VERSION"
-            EVENT_SHA="$BRANCH_SHA"
           else
             test "${GITHUB_REF_TYPE:-}" = "tag"
             RELEASE_TAG="$GITHUB_REF_NAME"
             VERSION="${RELEASE_TAG#v}"
-            EVENT_SHA="$GITHUB_SHA"
-
-            # Tag push 必须来自 main 当前 HEAD。
-            # 直接使用 GitHub 事件携带的 SHA，避免刚创建 tag 时的可见性竞态。
-            if [ "$EVENT_SHA" != "$BRANCH_SHA" ]; then
+            if [ "$GITHUB_SHA" != "$BRANCH_SHA" ]; then
               echo "::error::Tag $RELEASE_TAG 必须创建在 main 分支最新提交上。"
-              echo "::error::main=$BRANCH_SHA, event_source=$EVENT_SHA"
+              echo "::error::main=$BRANCH_SHA, event_source=$GITHUB_SHA"
               exit 1
             fi
           fi
 
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::无效的正式版本：$VERSION"
-            echo "::error::正确格式示例：5.3.0"
+            echo "::error::正确格式示例：5.9.0"
             exit 1
-          fi
-
-          git fetch --force --tags origin
-
-          python3 .github/scripts/sync_release_identity.py \
-            --channel stable \
-            --version "$VERSION" \
-            --tag "$RELEASE_TAG"
-
-          if ! git diff --quiet -- \
-              miuread.koplugin/miuread/config.lua \
-              miuread.koplugin/_meta.lua CHANGELOG.md; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add \
-              miuread.koplugin/miuread/config.lua \
-              miuread.koplugin/_meta.lua CHANGELOG.md
-            git commit -m "同步正式版本至 $VERSION" \
-              -m "根据 $RELEASE_TAG 自动同步源码版本、发布通道与版本记录。"
-            git push origin "HEAD:main"
-          fi
-
-          RELEASE_SOURCE_SHA="$(git rev-parse HEAD)"
-          CURRENT_TAG_SHA="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}" 2>/dev/null || true)"
-          if [ "$CURRENT_TAG_SHA" != "$RELEASE_SOURCE_SHA" ]; then
-            git tag -f "$RELEASE_TAG" "$RELEASE_SOURCE_SHA"
-            git push --force origin "refs/tags/$RELEASE_TAG"
           fi
 
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
-          echo "RELEASE_SOURCE_SHA=$RELEASE_SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "RELEASE_SOURCE_SHA=$BRANCH_SHA" >> "$GITHUB_ENV"
           echo "PACKAGE_NAME=miuread-v$VERSION-full.zip" >> "$GITHUB_ENV"
 
           echo "Stable release:"
           echo "  version=$VERSION"
           echo "  tag=$RELEASE_TAG"
-          echo "  source=$RELEASE_SOURCE_SHA"
+          echo "  source=$BRANCH_SHA"
 
       - name: Read and validate stable identity
         shell: bash
@@ -179,7 +147,11 @@ jobs:
           end = len(lines)
           heading = f"## {version}"
           for index, line in enumerate(lines):
-              if line == heading or line.startswith(heading + " - "):
+              if (
+                  line == heading
+                  or line.startswith(heading + " - ")
+                  or line.startswith(heading + " — ")
+              ):
                   start = index + 1
                   break
           if start is None:
@@ -250,13 +222,61 @@ jobs:
             exit 1
           fi
 
-      - name: Run Lua syntax checks
+      - name: Run Lua syntax checks and stable regression verifier
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y lua5.1
+          sudo apt-get install -y lua5.1 luajit
           find miuread.koplugin -type f -name '*.lua' -print0 | xargs -0 -n1 luac5.1 -p
+          lua5.1 tools/test_position_resolution.lua
+          lua5.1 tools/test_position_state_hotfix.lua
+          lua5.1 tools/test_open_sync_contract.lua
+          lua5.1 tools/test_beta6_sync_contract.lua
+          lua5.1 tools/test_beta7_sync_contract.lua
+          lua5.1 tools/test_beta8_home_translation_contract.lua
+          lua5.1 tools/test_590_stable_contract.lua
+          lua5.1 tools/test_cloud_mirror_contract.lua
+          lua5.1 tools/test_long_book_anchor.lua
+          lua5.1 tools/test_terminal_progress_guard.lua
+          lua5.1 tools/test_finished_resolution.lua
+          lua5.1 tools/test_store_repair.lua
+          lua5.1 tools/test_cloud_freshness_contract.lua
+          lua5.1 tools/test_beta10_translation_dependency_contract.lua
+          luajit tools/test_translation.lua
+          luajit tools/test_translation_generation.lua
+          luajit tools/test_translation_fetch.lua
+          luajit tools/test_internal_links.lua
+          python3 tools/test_extension_center_ux.py
+          python3 tools/verify_590_stable.py
+
+      - name: Ensure release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BRANCH_SHA="$(git rev-parse HEAD)"
+          REMOTE_TAG_SHA="$(
+            git ls-remote --tags origin "refs/tags/$RELEASE_TAG" \
+              | awk 'NR==1 {print $1}'
+          )"
+
+          if [ -n "$REMOTE_TAG_SHA" ]; then
+            if [ "$REMOTE_TAG_SHA" != "$BRANCH_SHA" ]; then
+              echo "::error::$RELEASE_TAG 已存在，但没有指向 main 当前 HEAD。"
+              echo "::error::tag=$REMOTE_TAG_SHA, main=$BRANCH_SHA"
+              echo "::error::请删除错误 tag，或使用新的正式版本号。"
+              exit 1
+            fi
+            echo "$RELEASE_TAG 已存在且位置正确，继续发布。"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$RELEASE_TAG" "$BRANCH_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+            echo "已创建 $RELEASE_TAG -> $BRANCH_SHA"
+          fi
+
 
       - name: Build stable full package and manifest
         shell: bash

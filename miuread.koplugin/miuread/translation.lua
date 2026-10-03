@@ -3,6 +3,10 @@
 -- before migrating highlights. Only paired blocks may hide their source text.
 local M = {}
 
+local function trim(value)
+    return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
 local INLINE = {span=true, a=true, em=true, strong=true, b=true, i=true, small=true}
 local DISPLAY = {li="list-item", table="table", tr="table-row", td="table-cell", th="table-cell"}
 local VOID = {area=true, base=true, br=true, col=true, embed=true, hr=true, img=true,
@@ -543,8 +547,9 @@ function M.inspect(path)
         return true
     end)
     if not ok then return nil, meta end
-    if not tostring(meta.book_id or ""):match("^CB_") then return nil, "not_imported_book" end
-    profile.book_id = meta.book_id
+    local book_id=trim(meta.book_id)
+    if book_id=="" then return nil,"translation_book_identity_missing" end
+    profile.book_id = book_id
     profile.separable = profile.separable and profile.blocks > 0
     return profile
 end

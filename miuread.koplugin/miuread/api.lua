@@ -393,7 +393,10 @@ end
 
 function Api:_translation_web_call(path, id, payload, raw_body)
     id=tostring(id or "")
-    if not id:match("^CB_") then error("translation requires an imported book") end
+    if id=="" or id:match("^%s*$") then error("translation book id missing") end
+    -- Do not infer translation support from the book-id shape.  WeRead now
+    -- exposes member translation for ordinary numeric books as well as CB_
+    -- uploads; the official endpoint is the authority for availability.
     local options={auth=true,retries=0,rate_limit_retries=0,rate_limit_fail_fast=true,timeout={8,20},
         headers={Accept="application/json, text/plain, */*",Origin="https://weread.qq.com",Referer=Protocol.reader_url(id)}}
     return self:_recover_web_once("translation",function()

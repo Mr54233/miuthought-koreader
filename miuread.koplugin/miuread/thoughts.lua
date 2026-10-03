@@ -40,7 +40,7 @@ local function group_content_signature(group)
             tostring(item.review_id or item.reviewId or ""),
             tostring(item.author or ""),
             tostring(item.abstract or ""),
-            tostring(item.content or ""),
+            Thoughts.comment_text(item.content),
             tostring(tonumber(item.likes or 0) or 0),
         }, "\31")
     end
@@ -295,8 +295,41 @@ local function trim_edge_blanks(text)
     return text:sub(first, last)
 end
 
-local function clean_body(value)
-    local text = U.clean_utf8 and U.clean_utf8(value) or tostring(value or "")
+local COMMENT_TEXT_KEYS = {"text", "content", "review", "value", "plainText", "rawText"}
+
+local function comment_text_value(value, depth, seen)
+    local kind = type(value)
+    if kind == "string" then return value end
+    if kind == "number" then return tostring(value) end
+    if kind ~= "table" or depth >= 3 then return "" end
+    seen = seen or {}
+    if seen[value] then return "" end
+    seen[value] = true
+
+    for _, key in ipairs(COMMENT_TEXT_KEYS) do
+        local child = rawget(value, key)
+        if child ~= nil then
+            local text = comment_text_value(child, depth + 1, seen)
+            if text ~= "" then seen[value] = nil; return text end
+        end
+    end
+
+    local parts = {}
+    local count = #value
+    if count > 0 then
+        for index = 1, math.min(count, 16) do
+            local text = comment_text_value(value[index], depth + 1, seen)
+            if text ~= "" then parts[#parts + 1] = text end
+        end
+    end
+    seen[value] = nil
+    return table.concat(parts, "\n")
+end
+
+function Thoughts.comment_text(value)
+    local text = comment_text_value(value, 0, {})
+    if text == "" then return "" end
+    text = U.clean_utf8 and U.clean_utf8(text) or text
     text = tostring(text or "")
         :gsub("\239\191\189", "")
         :gsub("\r\n", "\n")
@@ -305,6 +338,10 @@ local function clean_body(value)
         :gsub("[ \t]+\n", "\n")
         :gsub("\n[ \t]+", "\n")
     return trim_edge_blanks(text)
+end
+
+local function clean_body(value)
+    return Thoughts.comment_text(value)
 end
 
 local function clean_inline(value)
