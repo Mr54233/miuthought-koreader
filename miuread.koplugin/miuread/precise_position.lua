@@ -6,6 +6,7 @@ local MAX_CHAPTER_BYTES = 512 * 1024
 local MAX_CHAPTER_WORDS = 100000
 local END_SCAN_WORDS = 1024
 local ANCHOR_STEPS = {12, 24, 48}
+local SOURCE_ANCHOR_WORDS = {24, 16, 12}
 
 local ok_socket, socket = pcall(require, "socket")
 local function now_ms()
@@ -239,7 +240,11 @@ local function catalog_position(catalog, wanted_uid, wanted_idx)
     return selected
 end
 
-local function catalog_neighbor_candidates(catalog, primary_index, total_words)
+local function normalized_title(value)
+    return U.trim(tostring(value or "")):lower():gsub("%s+", " ")
+end
+
+local function catalog_neighbor_candidates(catalog, primary_index, total_words, local_title)
     catalog = type(catalog) == "table" and catalog or {}
     primary_index = tonumber(primary_index)
     total_words = math.max(0, tonumber(total_words) or 0)
@@ -252,25 +257,96 @@ local function catalog_neighbor_candidates(catalog, primary_index, total_words)
         before = before + words
     end
 
-    local out = {}
-    -- Only the immediate neighbourhood is eligible. This path is used solely
-    -- after the declared chapter's source text cannot be matched, so ordinary
-    -- books keep the existing exact mapping unchanged.
-    for distance = 1, 2 do
-        for _, index in ipairs({primary_index - distance, primary_index + distance}) do
-            local row = rows[index]
-            local uid = row and chapter_uid(row.chapter) or ""
-            if row and row.words > 0 and uid ~= "" then
-                out[#out + 1] = {
-                    chapter_uid = uid,
-                    chapter_index = chapter_index(row.chapter, index),
-                    chapter_title = tostring(row.chapter.title or ""),
-                    chapter_word_count = row.words,
-                    total_word_count = total_words,
-                    words_before = row.before,
-                }
+    local out, seen = {}, {}
+    local function add(index, reason)
+        if index == primary_index or seen[index] then return end
+        local row = rows[index]
+        local uid = row and chapter_uid(row.chapter) or ""
+        if row and row.words > 0 and uid ~= "" then
+            seen[index] = true
+            out[#out + 1] = {
+                chapter_uid = uid,
+                chapter_index = chapter_index(row.chapter, index),
+                chapter_title = tostring(row.chapter.title or ""),
+                chapter_word_count = row.words,
+                total_word_count = total_words,
+                words_before = row.before,
+                candidate_reason = tostring(reason or "neighbor"),
+            }
+        end
+    end
+
+    -- beta.19: a local TOC title is an exact, deterministic hint when the
+    -- generated EPUB's TOC index and the Web Reader catalog are shifted. Title
+    -- matches never win by themselves: source text still has to resolve to a
+    -- unique native chapter/co below.
+    local wanted_title = normalized_title(local_title)
+    if wanted_title ~= "" then
+        for index, row in ipairs(rows) do
+            if index ~= primary_index and normalized_title(row.chapter and row.chapter.title) == wanted_title then
+                add(index, "title_exact")
             end
         end
+    end
+
+    -- Keep the recovery window bounded. These neighbours are candidates only;
+    -- a candidate is accepted solely after an exact source anchor resolves.
+    for distance = 1, 2 do
+        add(primary_index - distance, "neighbor_" .. tostring(-distance))
+        add(primary_index + distance, "neighbor_+" .. tostring(distance))
+    end
+    return out
+end
+
+local function capture_source_anchor(document, toc, xp, count, direction, chapter_title)
+    count = math.max(1, math.floor(tonumber(count) or 1))
+    local anchor_start, anchor_end, point_side, kind
+    if direction == "backward" then
+        anchor_start = retreat_words(document, xp, count)
+        anchor_end = xp
+        point_side = "end"
+        kind = "backward_" .. tostring(count)
+    else
+        anchor_start = xp
+        anchor_end = advance_words(document, xp, count)
+        point_side = "start"
+        kind = "forward_" .. tostring(count)
+    end
+    if not anchor_start or not anchor_end then return nil end
+    local text = doc_text(document, anchor_start, anchor_end)
+    if not text or not text:find("%S") then return nil end
+
+    local before_xp = retreat_words(document, anchor_start, 12)
+    local after_xp = advance_words(document, anchor_end, 12)
+    local context_before = before_xp and (doc_text(document, before_xp, anchor_start) or "") or ""
+    local context_after = after_xp and (doc_text(document, anchor_end, after_xp) or "") or ""
+    local start_toc = select(1, toc_index_for_xpointer(toc, anchor_start))
+    local end_toc = select(1, toc_index_for_xpointer(toc, anchor_end))
+    local normalized_anchor = U.trim(tostring(text)):gsub("%s+", " ")
+    local normalized_chapter_title = U.trim(tostring(chapter_title or "")):gsub("%s+", " ")
+
+    return {
+        anchor_text = text,
+        context_before = context_before,
+        context_after = context_after,
+        point_side = point_side,
+        anchor_kind = kind,
+        anchor_chars = U.utf8_len(text),
+        anchor_start_toc_index = tonumber(start_toc),
+        anchor_end_toc_index = tonumber(end_toc),
+        anchor_cross_chapter = start_toc and end_toc and start_toc ~= end_toc or false,
+        anchor_contains_chapter_title = normalized_chapter_title ~= ""
+            and normalized_anchor:find(normalized_chapter_title, 1, true) ~= nil or false,
+    }
+end
+
+local function capture_source_anchors(document, toc, xp, chapter_title)
+    local out = {}
+    for _, count in ipairs(SOURCE_ANCHOR_WORDS) do
+        local forward = capture_source_anchor(document, toc, xp, count, "forward", chapter_title)
+        if forward then out[#out + 1] = forward end
+        local backward = capture_source_anchor(document, toc, xp, count, "backward", chapter_title)
+        if backward then out[#out + 1] = backward end
     end
     return out
 end
@@ -368,48 +444,12 @@ function M.capture(ui, record, catalog)
     end
     if catalog_row.words > MAX_CHAPTER_WORDS then return nil, "chapter_too_large_for_precision" end
 
-    local before_xp = retreat_words(document, xp, 12)
-    local anchor_start = xp
-    local anchor_end = advance_words(document, xp, 24)
-    local point_side = "start"
-    local anchor_text
-    local anchor_kind = "forward_24"
-    if anchor_end then anchor_text = doc_text(document, xp, anchor_end) end
-
-    if not anchor_text or not anchor_text:find("%S") then
-        anchor_start = retreat_words(document, xp, 24)
-        if not anchor_start then return nil, "anchor_unavailable" end
-        anchor_text = doc_text(document, anchor_start, xp)
-        if not anchor_text or not anchor_text:find("%S") then return nil, "anchor_empty" end
-        before_xp = retreat_words(document, anchor_start, 12)
-        anchor_end = xp
-        point_side = "end"
-        anchor_kind = "backward_24"
-    end
-
-    local context_before = ""
-    if before_xp then
-        local boundary_start = point_side == "start" and xp or retreat_words(document, xp, 24)
-        if boundary_start then context_before = doc_text(document, before_xp, boundary_start) or "" end
-    end
-    local context_after = ""
-    if anchor_end then
-        local after_xp = advance_words(document, anchor_end, 12)
-        if after_xp then context_after = doc_text(document, anchor_end, after_xp) or "" end
-    end
-
-    -- beta.24 diagnostics only: record whether the immutable text window spans
-    -- two TOC chapters. Do not shorten or otherwise change the anchor yet; the
-    -- failure must remain fail-closed until real-device logs identify the cause.
-    local anchor_start_toc = anchor_start and select(1, toc_index_for_xpointer(toc, anchor_start)) or nil
-    local anchor_end_toc = anchor_end and select(1, toc_index_for_xpointer(toc, anchor_end)) or nil
-    local anchor_cross_chapter = anchor_start_toc and anchor_end_toc
-        and anchor_start_toc ~= anchor_end_toc or false
-    local chapter_title = tostring(catalog_row.chapter.title or local_row.title or "")
-    local normalized_title = U.trim(chapter_title):gsub("%s+", " ")
-    local normalized_anchor = U.trim(tostring(anchor_text or "")):gsub("%s+", " ")
-    local anchor_contains_chapter_title = normalized_title ~= ""
-        and normalized_anchor:find(normalized_title, 1, true) ~= nil
+    local local_toc_title = tostring(type(toc.toc[toc_index]) == "table"
+        and (toc.toc[toc_index].title or toc.toc[toc_index].text) or "")
+    local chapter_title = tostring(catalog_row.chapter.title or local_row.title or local_toc_title or "")
+    local anchor_candidates = capture_source_anchors(document, toc, xp, chapter_title)
+    if #anchor_candidates == 0 then return nil, "anchor_unavailable" end
+    local primary_anchor = anchor_candidates[1]
 
     return {
         xpointer = xp,
@@ -417,6 +457,7 @@ function M.capture(ui, record, catalog)
         chapter_uid = chapter_uid(catalog_row.chapter) ~= "" and chapter_uid(catalog_row.chapter) or uid,
         chapter_index = chapter_index(catalog_row.chapter, catalog_row.index),
         chapter_title = chapter_title,
+        local_toc_title = local_toc_title,
         chapter_word_count = catalog_row.words,
         total_word_count = catalog_row.total,
         words_before = catalog_row.before,
@@ -424,20 +465,22 @@ function M.capture(ui, record, catalog)
         partial_source = standalone == true or (record.record and record.record.partial_range == true),
         whole_progress_available = chapter_only ~= true,
         catalog_pending = chapter_only == true,
-        anchor_text = anchor_text,
-        context_before = context_before,
-        context_after = context_after,
-        point_side = point_side,
-        anchor_kind = anchor_kind,
-        anchor_chars = U.utf8_len(anchor_text),
-        anchor_start_toc_index = tonumber(anchor_start_toc),
-        anchor_end_toc_index = tonumber(anchor_end_toc),
-        anchor_cross_chapter = anchor_cross_chapter == true,
-        anchor_contains_chapter_title = anchor_contains_chapter_title == true,
+        anchor_text = primary_anchor.anchor_text,
+        context_before = primary_anchor.context_before,
+        context_after = primary_anchor.context_after,
+        point_side = primary_anchor.point_side,
+        anchor_kind = primary_anchor.anchor_kind,
+        anchor_chars = primary_anchor.anchor_chars,
+        anchor_start_toc_index = primary_anchor.anchor_start_toc_index,
+        anchor_end_toc_index = primary_anchor.anchor_end_toc_index,
+        anchor_cross_chapter = primary_anchor.anchor_cross_chapter == true,
+        anchor_contains_chapter_title = primary_anchor.anchor_contains_chapter_title == true,
+        anchor_candidates = anchor_candidates,
         book_version = tonumber(record.record and record.record.progress_source_book_version)
             or tonumber(record.book and (record.book.version or record.book.bookVersion))
             or tonumber(record.record and (record.record.book_version or record.record.bookVersion)) or 0,
-        chapter_candidates = chapter_only and {} or catalog_neighbor_candidates(catalog, catalog_row.index, catalog_row.total),
+        chapter_candidates = chapter_only and {} or catalog_neighbor_candidates(
+            catalog, catalog_row.index, catalog_row.total, local_toc_title ~= "" and local_toc_title or chapter_title),
     }
 end
 

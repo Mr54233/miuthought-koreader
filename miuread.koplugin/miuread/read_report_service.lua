@@ -275,13 +275,18 @@ function Service.run(job)
             progress_ratio = time_only and nil or (tonumber(control.progress_ratio) or 0),
             time_only = time_only,
             report_mode = report_mode,
-            cloud_anchor = time_only and {
-                chapter_uid=control.cloud_anchor_chapter_uid,
-                chapter_idx=control.cloud_anchor_chapter_idx,
-                chapter_offset=control.cloud_anchor_chapter_offset,
-                protocol_progress=control.cloud_anchor_progress,
-                raw_progress=control.cloud_anchor_raw_progress,
-                source=control.cloud_anchor_source,
+            -- beta.15: time-only compatibility writes may echo only the most
+            -- recent raw server position. If these fields are absent, pass nil
+            -- so the isolated worker refreshes WeRead before writing.
+            cloud_anchor = time_only and (tostring(control.remote_wire_chapter_uid or "")~=""
+                and tonumber(control.remote_wire_chapter_offset)~=nil
+                and tonumber(control.remote_wire_protocol_progress)~=nil) and {
+                chapter_uid=control.remote_wire_chapter_uid,
+                chapter_idx=control.remote_wire_chapter_idx,
+                chapter_offset=control.remote_wire_chapter_offset,
+                protocol_progress=control.remote_wire_protocol_progress,
+                raw_progress=control.remote_wire_raw_progress,
+                source=control.remote_wire_source or "remote_wire",
             } or nil,
             elapsed_seconds = elapsed,
             cookies = auth.cookies or {},

@@ -1,6 +1,6 @@
 {
   "version": "5.9.0",
-  "name": "觅阅 · 微信读书助手 5.9.0",
+  "name": "\u89c5\u9605 \u00b7 \u5fae\u4fe1\u8bfb\u4e66\u52a9\u624b 5.9.0",
   "channel": "stable",
   "package_type": "full",
   "package_url": "https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0/miuread-v5.9.0-full.zip",
@@ -10,8 +10,8 @@
     "https://gh-proxy.com/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0/miuread-v5.9.0-full.zip",
     "https://ghproxy.net/https://github.com/miumiupy98-art/miuread-koreader/releases/download/v5.9.0/miuread-v5.9.0-full.zip"
   ],
-  "size": 2024591,
-  "sha256": "fabe4c6ab2e92b1c85d49c3f1703e577ff3894486b1512d5fec6c3ae3af33341",
-  "summary": "5.9.0 正式收口多设备精确进度同步、统一恢复与网络就绪保护，并整合外文翻译、扩展中心及 5.9 beta 阶段的可靠性修复。",
-  "notes": "5.9.0 正式版基于 5.9.0-beta.12 收口：保留 verified anchor + chapter_uid/co 精确验收、write fence、verify-first 与安全 recovery；旧 source cache 失效时真正刷新目标章节；reading-time writer 使用 KOReader 子进程完成状态减少误超时；同时正式纳入外文翻译、统一手动同步、wake online-ready、扩展中心及 5.8/5.9 阶段的稳定性改进。Schema 136。"
+  "size": 2035231,
+  "sha256": "8572c7bcfc9b57dd5e4c3ac4758f4139625b9e431534cbb85b22a70ad2081cff",
+  "summary": "\u6b63\u5f0f\u7248\u57fa\u4e8e 5.9.0-beta.19 \u6536\u53e3\uff0c\u4e0d\u6539\u53d8 beta.19 \u5df2\u9a8c\u8bc1\u7684\u8fd0\u884c\u903b\u8f91\uff1b\u63d2\u4ef6\u7248\u672c\u5207\u6362\u4e3a `5.9.0`\uff0c\u9ed8\u8ba4\u66f4\u65b0\u901a\u9053\u5207\u6362\u4e3a `stable-channel/update.json`\uff0cSchema \u4fdd\u6301 136\u3002\n\u5b8c\u6210 5.9 \u591a\u8bbe\u5907\u9605\u8bfb\u8fdb\u5ea6\u6a21\u578b\uff1a\u5f00\u4e66\u6309\u53ef\u4fe1\u951a\u70b9\u3001\u540c\u6b65\u56e0\u679c\u4e0e\u771f\u5b9e\u9605\u8bfb\u4e8b\u4ef6\u5224\u65ad\u672c\u673a/\u4e91\u7aef\u65b0\u65e7\uff0c\u4fdd\u7559\u51b2\u7a81\u4fdd\u62a4\u3001\u665a\u5230\u4e91\u7aef\u7ed3\u679c\u9632\u7a81\u8df3\u3001...",
+  "notes": "\u6b63\u5f0f\u7248\u57fa\u4e8e 5.9.0-beta.19 \u6536\u53e3\uff0c\u4e0d\u6539\u53d8 beta.19 \u5df2\u9a8c\u8bc1\u7684\u8fd0\u884c\u903b\u8f91\uff1b\u63d2\u4ef6\u7248\u672c\u5207\u6362\u4e3a `5.9.0`\uff0c\u9ed8\u8ba4\u66f4\u65b0\u901a\u9053\u5207\u6362\u4e3a `stable-channel/update.json`\uff0cSchema \u4fdd\u6301 136\u3002\n\u5b8c\u6210 5.9 \u591a\u8bbe\u5907\u9605\u8bfb\u8fdb\u5ea6\u6a21\u578b\uff1a\u5f00\u4e66\u6309\u53ef\u4fe1\u951a\u70b9\u3001\u540c\u6b65\u56e0\u679c\u4e0e\u771f\u5b9e\u9605\u8bfb\u4e8b\u4ef6\u5224\u65ad\u672c\u673a/\u4e91\u7aef\u65b0\u65e7\uff0c\u4fdd\u7559\u51b2\u7a81\u4fdd\u62a4\u3001\u665a\u5230\u4e91\u7aef\u7ed3\u679c\u9632\u7a81\u8df3\u3001..."
 }

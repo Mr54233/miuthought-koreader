@@ -256,7 +256,7 @@ jobs:
           lua5.1 tools/test_beta6_sync_contract.lua
           lua5.1 tools/test_beta7_sync_contract.lua
           lua5.1 tools/test_beta8_home_translation_contract.lua
-          lua5.1 tools/test_beta12_sync_contract.lua
+          lua5.1 tools/test_beta19_robust_mapping.lua
           lua5.1 tools/test_cloud_mirror_contract.lua
           lua5.1 tools/test_long_book_anchor.lua
           lua5.1 tools/test_terminal_progress_guard.lua
@@ -269,7 +269,7 @@ jobs:
           luajit tools/test_translation_fetch.lua
           luajit tools/test_internal_links.lua
           python3 tools/test_extension_center_ux.py
-          python3 tools/verify_590_beta12.py
+          python3 tools/verify_590_beta19.py
 
       - name: Ensure release tag
         shell: bash

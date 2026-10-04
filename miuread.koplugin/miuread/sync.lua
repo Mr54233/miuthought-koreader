@@ -13,6 +13,7 @@ local BookIntegrity = require("miuread.book_integrity")
 local PrecisePosition = require("miuread.precise_position")
 local SourcePosition = require("miuread.source_position")
 local U = require("miuread.util")
+local Digests = require("miuread.digests")
 local SubprocessHygiene = require("miuread.subprocess_hygiene")
 
 local Sync = {}
@@ -20,7 +21,7 @@ Sync.__index = Sync
 local legacy_daemon_retired = false
 
 local CONTEXT_MAX_AGE = 15 * 60
-local READ_REPORT_SERVICE_VERSION = 28
+local READ_REPORT_SERVICE_VERSION = 30
 local FIRST_REPORT_DELAY = 15
 local FINAL_REPORT_MIN_SECONDS = 10
 local PRECISE_POSITION_LEAD_SECONDS = 12
@@ -1785,8 +1786,47 @@ function Sync:text_anchor_rescue(remote,options)
     local page_start=tonumber(item.page or item.pageno)
     local next_item=items[map_index+1]
     local page_end=type(next_item)=="table" and tonumber(next_item.page or next_item.pageno) or nil
-    local ok,hits=pcall(document.findAllText,document,query,true,3,40)
-    if not ok or type(hits)~="table" then return false,"text_anchor_search_failed" end
+    local query_hash=Digests.sha256(query):sub(1,16)
+    local query_valid,invalid_at=U.is_valid_utf8(query)
+    local search=ui and ui.search or nil
+    local flags=search and search.current_search_type and search.current_search_type.flags or nil
+    local ok,hits=pcall(document.findAllText,document,query,true,3,40,false,flags)
+    local strategy="standard"
+    local first_error=not ok and tostring(hits) or (type(hits)~="table" and ("return_type:"..type(hits)) or nil)
+    if not ok or type(hits)~="table" then
+        strategy="compat"
+        ok,hits=pcall(document.findAllText,document,query,true,3,40)
+    end
+    if not ok then
+        logger.warn("[MiuRead][TextAnchorDiagnostic]",
+            "state=call_failed","book=",tostring(record.book and record.book.book_id or "-"),
+            "chapter=",remote_uid,"co=",tostring(remote.offset or remote.chapter_offset or "-"),
+            "strategy=",strategy,"query_chars=",tostring(U.utf8_len(query)),
+            "query_bytes=",tostring(#query),"utf8_valid=",tostring(query_valid),
+            "invalid_at=",tostring(invalid_at or "-"),"query_hash=",query_hash,
+            "first_error=",U.first_line(first_error or "-",160),
+            "error=",U.first_line(tostring(hits),220))
+        return false,"text_anchor_search_call_failed"
+    end
+    if type(hits)~="table" then
+        logger.warn("[MiuRead][TextAnchorDiagnostic]",
+            "state=invalid_return","book=",tostring(record.book and record.book.book_id or "-"),
+            "chapter=",remote_uid,"co=",tostring(remote.offset or remote.chapter_offset or "-"),
+            "strategy=",strategy,"return_type=",type(hits),
+            "query_chars=",tostring(U.utf8_len(query)),"query_bytes=",tostring(#query),
+            "utf8_valid=",tostring(query_valid),"query_hash=",query_hash,
+            "first_error=",U.first_line(first_error or "-",160))
+        return false,"text_anchor_search_invalid_return"
+    end
+    if #hits==0 then
+        logger.warn("[MiuRead][TextAnchorDiagnostic]",
+            "state=zero_hits","book=",tostring(record.book and record.book.book_id or "-"),
+            "chapter=",remote_uid,"co=",tostring(remote.offset or remote.chapter_offset or "-"),
+            "strategy=",strategy,"query_chars=",tostring(U.utf8_len(query)),
+            "query_bytes=",tostring(#query),"utf8_valid=",tostring(query_valid),
+            "query_hash=",query_hash,"first_error=",U.first_line(first_error or "-",160))
+        return false,"text_anchor_search_zero_hits"
+    end
     local candidates={}
     for _,hit in ipairs(hits) do
         local xp=type(hit)=="table" and hit.start or nil
@@ -1797,7 +1837,13 @@ function Sync:text_anchor_rescue(remote,options)
         local in_chapter=(not page_start or not page or page>=page_start) and (not page_end or not page or page<page_end)
         if xp and in_chapter then candidates[#candidates+1]={xpointer=xp,page=page} end
     end
-    if #candidates==0 then return false,"text_anchor_not_found_in_chapter" end
+    if #candidates==0 then
+        logger.warn("[MiuRead][TextAnchorDiagnostic]",
+            "state=hits_outside_chapter","book=",tostring(record.book and record.book.book_id or "-"),
+            "chapter=",remote_uid,"co=",tostring(remote.offset or remote.chapter_offset or "-"),
+            "strategy=",strategy,"hits=",tostring(#hits),"query_hash=",query_hash)
+        return false,"text_anchor_hits_outside_chapter"
+    end
     local chosen=candidates[1]
     if #candidates>1 and page_start and page_end and tonumber(remote.chapter_ratio) then
         local target=page_start+U.clamp(tonumber(remote.chapter_ratio) or 0,0,1)*math.max(1,page_end-page_start)
@@ -1807,12 +1853,21 @@ function Sync:text_anchor_rescue(remote,options)
             if d<best then best=d; chosen=candidate end
         end
     elseif #candidates>1 then
+        logger.warn("[MiuRead][TextAnchorDiagnostic]",
+            "state=multiple_hits","book=",tostring(record.book and record.book.book_id or "-"),
+            "chapter=",remote_uid,"co=",tostring(remote.offset or remote.chapter_offset or "-"),
+            "strategy=",strategy,"hits=",tostring(#candidates),"query_hash=",query_hash)
         return false,"text_anchor_ambiguous"
     end
     local jumped=self:jump_xpointer(chosen.xpointer)
     if not jumped then return false,"text_anchor_jump_failed" end
+    logger.info("[MiuRead][TextAnchorDiagnostic]",
+        "state=unique_hit","book=",tostring(record.book and record.book.book_id or "-"),
+        "chapter=",remote_uid,"co=",tostring(remote.offset or remote.chapter_offset or "-"),
+        "strategy=",strategy,"hits=",tostring(#candidates),"query_hash=",query_hash)
     logger.info("[MiuRead][ProgressJump]","method=text_anchor_xpointer","chapter=",remote_uid,
-        "hits=",tostring(#candidates),"query_chars=",tostring(U.utf8_len(query)))
+        "hits=",tostring(#candidates),"query_chars=",tostring(U.utf8_len(query)),
+        "strategy=",strategy)
     return true,nil,{method="text_anchor_xpointer",xpointer=chosen.xpointer,page=chosen.page,hits=#candidates}
 end
 
@@ -2159,6 +2214,31 @@ local function cloud_anchor_from(value, state)
     }
 end
 
+-- beta.15: the reading-time writer must echo the most recent server wire
+-- position, never a local/pending/previously verified anchor. This object is
+-- intentionally valid even when canonical whole-book progress cannot be
+-- resolved locally: chapterUid + chapterOffset + the server protocol progress
+-- are enough to make a reading-time compatibility write position-idempotent.
+local function remote_wire_anchor_from(value, state)
+    value=type(value)=="table" and value or {}
+    local uid=value.chapter_uid or value.chapterUid
+    local offset=tonumber(value.chapter_offset or value.offset or value.chapterOffset or value.canonical_offset)
+    local protocol_progress=tonumber(value.raw_percent or value.raw_progress or value.protocol_progress or value.progress)
+    if tostring(uid or "")=="" or offset==nil or protocol_progress==nil then return nil end
+    return {
+        chapter_uid=uid,
+        chapter_idx=tonumber(value.chapter_idx or value.chapter_index or value.chapterIdx) or 0,
+        chapter_offset=math.max(0,math.floor(offset+.5)),
+        protocol_progress=math.max(0,math.min(100,protocol_progress)),
+        raw_progress=tonumber(value.raw_progress or value.raw_percent or protocol_progress),
+        source=tostring(value.source or state or "remote_wire"),
+        state=tostring(state or "remote_wire_observed"),
+        server_updated=tonumber(value.updated_at or value.updated),
+        fetched_at=tonumber(value.fetched_at) or os.time(),
+        saved_at=os.time(),
+    }
+end
+
 function Sync:cloud_anchor(book_id)
     book_id=tostring(book_id or "")
     if book_id=="" then return nil end
@@ -2172,23 +2252,48 @@ function Sync:cloud_anchor(book_id)
     return cloud_anchor_from(remote,"stored_remote")
 end
 
+function Sync:remote_wire_anchor(book_id)
+    book_id=tostring(book_id or "")
+    if book_id=="" then return nil end
+    local session=self.store:session(book_id) or {}
+    local anchor=remote_wire_anchor_from(session.remote_wire_anchor,"stored_remote_wire")
+    if anchor then return anchor end
+    return remote_wire_anchor_from(session.remote,"stored_remote")
+end
+
+function Sync:set_remote_wire_anchor(book_id,value,state,write_control)
+    book_id=tostring(book_id or "")
+    local anchor=remote_wire_anchor_from(value,state)
+    if book_id=="" or not anchor then return false end
+    self.store:save_session(book_id,{remote_wire_anchor=anchor})
+    if write_control~=false and self.daemon
+        and tostring(self.daemon.book_id or self.daemon.final_book_id or "")==book_id then
+        self:_write_daemon_control(self.daemon.active==true,true,{
+            remote_wire_chapter_uid=anchor.chapter_uid,
+            remote_wire_chapter_idx=anchor.chapter_idx,
+            remote_wire_chapter_offset=anchor.chapter_offset,
+            remote_wire_protocol_progress=anchor.protocol_progress,
+            remote_wire_raw_progress=anchor.raw_progress,
+            remote_wire_source=anchor.source,
+            remote_wire_state=anchor.state,
+            remote_wire_server_updated=anchor.server_updated,
+        })
+    end
+    logger.info("[MiuRead][RemoteWireAnchor] updated","book=",book_id,
+        "chapter=",tostring(anchor.chapter_uid),"co=",tostring(anchor.chapter_offset),
+        "pr=",tostring(anchor.protocol_progress),"state=",tostring(anchor.state))
+    return true
+end
+
 function Sync:set_cloud_anchor(book_id, value, state, write_control)
     book_id=tostring(book_id or "")
     local anchor=cloud_anchor_from(value,state)
     if book_id=="" or not anchor then return false end
     self.store:save_session(book_id,{cloud_anchor=anchor})
-    if write_control~=false and self.daemon
-        and tostring(self.daemon.book_id or self.daemon.final_book_id or "")==book_id then
-        self:_write_daemon_control(self.daemon.active==true,true,{
-            cloud_anchor_chapter_uid=anchor.chapter_uid,
-            cloud_anchor_chapter_idx=anchor.chapter_idx,
-            cloud_anchor_chapter_offset=anchor.chapter_offset,
-            cloud_anchor_progress=anchor.progress,
-            cloud_anchor_raw_progress=anchor.raw_progress,
-            cloud_anchor_source=anchor.source,
-            cloud_anchor_state=anchor.state,
-        })
-    end
+    -- beta.16: canonical CloudAnchor is main-process reconciliation state only.
+    -- The long-lived ReadReport daemon is permanently time-only and must never
+    -- receive this object; its only position channel is set_remote_wire_anchor().
+    -- Keep write_control in the signature for compatibility with existing callers.
     logger.info("[MiuRead][CloudAnchor] updated","book=",book_id,
         "state=",anchor.state,"chapter=",tostring(anchor.chapter_uid),
         "co=",tostring(anchor.chapter_offset),"progress=",tostring(anchor.progress))
@@ -2315,6 +2420,12 @@ function Sync:remote(book_id, callback, options)
             remote_agent_error=value.agent_error,
             position_state=position_state,
         })
+        -- beta.15: every authoritative server observation refreshes the wire
+        -- echo anchor immediately, even when a local pending progress item exists
+        -- or this call deliberately disables canonical CloudAnchor updates.
+        if not remote.conflict then
+            self:set_remote_wire_anchor(book_id,remote,"remote_observed_wire",true)
+        end
         if not remote.conflict and options.update_cloud_anchor~=false then
             local current_session=self.store:session(book_id) or {}
             local has_pending=type(current_session.pending_progress)=="table"
@@ -3247,10 +3358,10 @@ function Sync:retry_safe_reading_time(book_id,record_override,position_override,
         or tostring(position.chapter_uid or position.chapterUid or "")=="" then
         callback(false,"缺少安全的位置锚点，不能重传阅读时间","context"); return false
     end
-    local anchor=self:cloud_anchor(book_id)
+    local anchor=self:remote_wire_anchor(book_id)
     if not anchor then
-        callback(false,"缺少云端位置锚点，不能保证重传只增加阅读时间","context")
-        return false
+        logger.info("[MiuRead][ReadingTimeRetry] no cached remote wire anchor; worker will refresh server position",
+            "book=",book_id)
     end
     local core_hash=self:_core_map_hash(record_override)
     local started=self:upload(seconds,function(ok,result,_position,value)
@@ -3934,7 +4045,10 @@ function Sync:_write_daemon_control(active, immediate, extra)
         local auth=self.store:auth()
         local account=type(auth.account)=="table" and auth.account or {}
         local book_id=tostring(d.book_id or d.final_book_id or "")
-        local cloud_anchor=book_id~="" and self:cloud_anchor(book_id) or nil
+        -- beta.16: the long-lived daemon is permanently time-only and may not
+        -- serialize canonical/pending CloudAnchor coordinates at all. Only the
+        -- dedicated server-wire channel is allowed into daemon control.
+        local wire_anchor=book_id~="" and self:remote_wire_anchor(book_id) or nil
         local position=nil
         if not time_only then
             local record=self:record()
@@ -3971,13 +4085,17 @@ function Sync:_write_daemon_control(active, immediate, extra)
             position_basis = position and position.position_basis or existing.position_basis,
             position_precision_ms = position and position.precision_ms or existing.position_precision_ms,
             position_safe = time_only or (position and true or existing.position_safe==true),
-            cloud_anchor_chapter_uid=cloud_anchor and cloud_anchor.chapter_uid or existing.cloud_anchor_chapter_uid,
-            cloud_anchor_chapter_idx=cloud_anchor and cloud_anchor.chapter_idx or existing.cloud_anchor_chapter_idx,
-            cloud_anchor_chapter_offset=cloud_anchor and cloud_anchor.chapter_offset or existing.cloud_anchor_chapter_offset,
-            cloud_anchor_progress=cloud_anchor and cloud_anchor.progress or existing.cloud_anchor_progress,
-            cloud_anchor_raw_progress=cloud_anchor and cloud_anchor.raw_progress or existing.cloud_anchor_raw_progress,
-            cloud_anchor_source=cloud_anchor and cloud_anchor.source or existing.cloud_anchor_source,
-            cloud_anchor_state=cloud_anchor and cloud_anchor.state or existing.cloud_anchor_state,
+            -- beta.15: reading_time_compat consumes only these fresh server-wire
+            -- fields. Do not retain an older value when no wire anchor is known;
+            -- omission forces the worker to GET the current server position.
+            remote_wire_chapter_uid=wire_anchor and wire_anchor.chapter_uid or nil,
+            remote_wire_chapter_idx=wire_anchor and wire_anchor.chapter_idx or nil,
+            remote_wire_chapter_offset=wire_anchor and wire_anchor.chapter_offset or nil,
+            remote_wire_protocol_progress=wire_anchor and wire_anchor.protocol_progress or nil,
+            remote_wire_raw_progress=wire_anchor and wire_anchor.raw_progress or nil,
+            remote_wire_source=wire_anchor and wire_anchor.source or nil,
+            remote_wire_state=wire_anchor and wire_anchor.state or nil,
+            remote_wire_server_updated=wire_anchor and wire_anchor.server_updated or nil,
             last_activity = tonumber(self.last_activity) or os.time(),
             updated_at = os.time(),
         }

@@ -5,7 +5,7 @@ assert(main:find('chapter_offset_mismatch',1,true) and main:find('co_tolerance',
 assert(main:find('chapter_anchor_rescue',1,true) or main:find('chapter anchor',1,true),'chapter rescue retained')
 assert(main:find('_G.__MIUREAD_POSITION_RESOLUTION.decide',1,true),'long-book conflict goes through automatic resolver')
 assert(main:find('text="使用云端位置"',1,true)==nil and main:find('text="使用本机位置并上传"',1,true)==nil,'old chapter conflict chooser removed')
-assert(main:find('callback=function(ok,actual_position)',1,true),'verified remote jump persists actual exact position')
+assert(main:find('callback=function(ok,actual_position',1,true),'verified remote jump persists actual exact position')
 assert(main:find('remote_exact_coordinate_missing',1,true) and main:find('_set_progress_write_fence',1,true),'remote percent without exact coordinate cannot authorize local overwrite')
 assert(main:find('remote_verification_failed_rollback',1,true),'failed exact verification rolls back to pre-jump local position')
 print('long book anchor: PASS')

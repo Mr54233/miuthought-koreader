@@ -962,10 +962,11 @@ end
 -- Only the book-scoped fields are shared, and `url` is rebuilt locally for the
 -- requested chapter instead of being carried over from the cached page.
 function Reader:chapter_state(book_id,chapter_uid,keepalive,fresh)
-    -- Translation generation must observe a freshly generated Web Reader page:
-    -- do not let the normal 240 s book-scoped psvts cache hide new enRead data.
-    -- Keep this isolated from the regular download cache so ordinary whole-book
-    -- downloads still retain beta.23+ context reuse and memory behavior.
+    -- Callers that require coordinate-authoritative source data (translation
+    -- generation and progress-source mapping) must observe a freshly generated
+    -- Web Reader page. Do not let the normal 240 s book-scoped psvts cache hide
+    -- chapter-specific source/context changes. Keep this isolated from ordinary
+    -- whole-book downloads so beta.23+ context reuse and performance remain.
     if fresh then
         local fetched_at=os.time()
         local state=book_scoped_context(self:state(book_id,chapter_uid,keepalive,true))
@@ -1059,7 +1060,7 @@ function Reader:_txt_once(book, chapter, opt, state)
     opt = opt or {}
     local id = tostring(book.bookId or book.book_id)
     local uid = chapter.chapterUid or chapter.uid
-    state = state or self:chapter_state(id, uid, opt.keepalive,opt.translation==true)
+    state = state or self:chapter_state(id, uid, opt.keepalive,opt.translation==true or opt.fresh_context==true)
     local context=opt.translation and {translation=true,pclts=state.pclts,compatibility=opt.translation_compatibility} or nil
     local a = self:shard("/web/book/chapter/t_0", id, uid, state.psvts, false, opt.keepalive,context)
     local ok_b, b = pcall(self.shard, self, "/web/book/chapter/t_1", id, uid, state.psvts, false, opt.keepalive,context)
@@ -1078,7 +1079,7 @@ function Reader:_epub_once(book, chapter, opt, state)
     opt = opt or {}
     local id = tostring(book.bookId or book.book_id)
     local uid = chapter.chapterUid or chapter.uid
-    state = state or self:chapter_state(id, uid, opt.keepalive,opt.translation==true)
+    state = state or self:chapter_state(id, uid, opt.keepalive,opt.translation==true or opt.fresh_context==true)
     local context=opt.translation and {translation=true,pclts=state.pclts,compatibility=opt.translation_compatibility} or nil
 
     local a = self:shard("/web/book/chapter/e_0", id, uid, state.psvts, false, opt.keepalive,context)
@@ -1209,7 +1210,7 @@ function Reader:_chapter_once(book, chapter, format, opt)
     opt = opt or {}
     local id = tostring(book.bookId or book.book_id)
     local uid = chapter.chapterUid or chapter.uid
-    local state = self:chapter_state(id, uid, opt.keepalive,opt.translation==true)
+    local state = self:chapter_state(id, uid, opt.keepalive,opt.translation==true or opt.fresh_context==true)
 
     if format == "txt" and not opt.translation then
         local ok, a, b, c, d = pcall(self._txt_once, self, book, chapter, opt, state)

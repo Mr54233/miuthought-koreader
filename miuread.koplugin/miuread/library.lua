@@ -129,6 +129,10 @@ local function book(row,raw_index,archive_map)
         row.shelfOrder,row.shelfIndex,row.bookOrder,row.sortOrder,row.displayOrder,
         b.shelfOrder,b.shelfIndex,b.bookOrder,b.sortOrder,b.displayOrder
     )
+    local remote_progress_value=row.progress
+    if remote_progress_value==nil then remote_progress_value=row.readingProgress end
+    if remote_progress_value==nil then remote_progress_value=b.progress end
+    local remote_progress_known=remote_progress_value~=nil and tonumber(remote_progress_value)~=nil
     return {
         bookId=id,
         title=b.title or row.title or "未命名",
@@ -140,10 +144,12 @@ local function book(row,raw_index,archive_map)
         version=tonumber(b.version or b.bookVersion or b.book_version
             or row.version or row.bookVersion or row.book_version),
         updateTime=tonumber(row.updateTime or b.updateTime or row.bookUpdateTime or 0) or 0,
-        progress=tonumber(row.progress or row.readingProgress or b.progress or 0) or 0,
-        remote_progress=tonumber(row.progress or row.readingProgress or b.progress or 0) or 0,
-        finished=(row.finished==true or tonumber(row.progress or row.readingProgress or b.progress or 0)>=100),
-        remote_finished=(row.finished==true or tonumber(row.progress or row.readingProgress or b.progress or 0)>=100),
+        progress=remote_progress_known and tonumber(remote_progress_value) or nil,
+        progress_known=remote_progress_known,
+        remote_progress=remote_progress_known and tonumber(remote_progress_value) or nil,
+        remote_progress_known=remote_progress_known,
+        finished=(row.finished==true or (remote_progress_known and tonumber(remote_progress_value)>=100)),
+        remote_finished=(row.finished==true or (remote_progress_known and tonumber(remote_progress_value)>=100)),
         isTop=truthy(top_value),
         rawIndex=tonumber(raw_index) or 0,
         explicitOrder=explicit_order,

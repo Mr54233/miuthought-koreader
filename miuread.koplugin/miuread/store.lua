@@ -265,6 +265,67 @@ local function compact_sessions_for_library(sessions,library,promote_catalogs)
 end
 
 
+-- beta.16: invalidate every persisted progress-control snapshot that can
+-- outlive a plugin update/downgrade and later participate in reconciliation or
+-- a compatibility write. User data is deliberately preserved: authentication,
+-- books/downloads, annotations, recent reads, reading-time history and
+-- local_display_progress are not touched.
+local PROGRESS_SYNC_RESET_KEYS={
+    "cloud_anchor","remote_wire_anchor","remote","remote_sources","remote_checked_at",
+    "remote_web_error","remote_agent_error","remote_verified","verified_at","verified_reason",
+    "verified_local_percent","verified_remote_percent","verification_login_session_id",
+    "position_state","local_position_snapshot","last_verified_exact_position","pending_unresolved_position",
+    -- local_read_event_at is reconciliation metadata, not the KOReader page.
+    -- Keeping it across a clean-state reset can immediately recreate an
+    -- ambiguous-clock conflict against the freshly fetched server baseline.
+    "local_read_event_at",
+    "pending_progress","pending_progress_coordinate",
+    "progress_sync_state","progress_sync_message","progress_upload_state","progress_upload_error",
+    "progress_upload_pending_at","progress_upload_submitted_at","progress_upload_verified_at",
+    "progress_upload_source","progress_upload_chapter_uid","progress_upload_co","progress_upload_remote_co",
+    "progress_submission_phase","progress_resolution_choice","progress_resolution_fingerprint","progress_resolution_at",
+    "progress_resubmit_allowed","progress_last_verify_reason","progress_last_verify_at",
+    "progress_latest_sequence","progress_verified_sequence","progress_verified_epoch",
+    "progress_decided_at","progress_local_percent","progress_remote_percent",
+    "progress_worker_active","progress_worker_updated_at",
+    "progress_write_blocked","progress_write_block_reason","progress_write_blocked_at",
+    -- Old report contexts can contain a frozen chapter/co from an earlier
+    -- generation. Force a clean context rebuild after the reset.
+    "legacy_report_context","report_context","report_core_map_hash","report_login_session_id",
+}
+
+local function reset_progress_sync_session(row,reason)
+    if type(row)~="table" then return row,0 end
+    local changed=0
+    local previous_epoch=math.max(1,tonumber(row.progress_epoch or 1) or 1)
+    for _,key in ipairs(PROGRESS_SYNC_RESET_KEYS) do
+        if row[key]~=nil then row[key]=nil; changed=changed+1 end
+    end
+    row.progress_epoch=previous_epoch+1
+    row.progress_state_reset_at=os.time()
+    row.progress_state_reset_reason=tostring(reason or "sync_state_reset")
+    -- Reading-time debt/context is best-effort. Never preserve a retry payload
+    -- across the position reset, but keep confirmed reading-time totals/history.
+    if tonumber(row.pending_report_seconds or 0)~=0 then changed=changed+1 end
+    if row.pending_report_safe==true then changed=changed+1 end
+    row.pending_report_seconds=0
+    row.pending_report_safe=false
+    return row,changed+1
+end
+
+local function reset_progress_sync_sessions(sessions,reason,only_id)
+    sessions=type(sessions)=="table" and sessions or {}
+    local books,fields=0,0
+    local target=tostring(only_id or "")
+    for id,row in pairs(sessions) do
+        if type(row)=="table" and (target=="" or tostring(id)==target) then
+            local _,count=reset_progress_sync_session(row,reason)
+            fields=fields+count; books=books+1
+        end
+    end
+    return sessions,books,fields
+end
+
 local function emergency_compact_sessions(sessions)
     sessions=type(sessions)=="table" and sessions or {}
     local changed=0
@@ -564,6 +625,47 @@ function Store:new(options)
             startup_dirty=true
             logger.warn("[MiuRead][StoreRepair] beta.5 progress fences recovered at startup","sessions=",tostring(cleaned))
         end
+    end
+    -- beta.16 one-shot clean-room migration. 5.9 beta.4-15 all used
+    -- schema 136, so downgrading/reinstalling did not invalidate progress
+    -- transactions or CloudAnchor/report-context snapshots. Run once on the
+    -- existing store, advance each book's progress_epoch, and remove only the
+    -- sync control plane. The next open/sync must rebuild its baseline from a
+    -- fresh server observation.
+    if schema_before>=Config.SCHEMA and o.db:readSetting("progress_state_reset_beta16",false)~=true then
+        local sessions=o.db:readSetting("sessions",{}) or {}
+        local cleaned,books,fields=reset_progress_sync_sessions(sessions,"beta16_one_shot_clean_state")
+        o.db:saveSetting("sessions",cleaned)
+        o.db:saveSetting("progress_state_reset_beta16",true)
+        o.db:saveSetting("progress_state_reset_beta16_at",os.time())
+        -- Old best-effort time-recovery payloads must not survive the same reset.
+        pcall(os.remove,data.."/readtime-recovery-v1.json")
+        startup_dirty=true
+        logger.warn("[MiuRead][StoreRepair] beta.16 progress sync state reset",
+            "books=",tostring(books),"fields=",tostring(fields),"preserved=local_display/auth/books/annotations")
+    end
+    -- beta.17 repeats the control-plane reset once because beta.16 exposed a
+    -- cross-Store resurrection bug: an older Home/Reader Store could flush a
+    -- pre-reset pending transaction back over the clean disk row. beta.17 fixes
+    -- that merge below with progress_epoch authority, then performs one final
+    -- reset so installations already affected by beta.16 start clean.
+    if schema_before>=Config.SCHEMA and o.db:readSetting("progress_state_reset_beta17",false)~=true then
+        local sessions=o.db:readSetting("sessions",{}) or {}
+        local cleaned,books,fields=reset_progress_sync_sessions(sessions,"beta17_epoch_authoritative_clean_state")
+        o.db:saveSetting("sessions",cleaned)
+        o.db:saveSetting("progress_state_reset_beta17",true)
+        o.db:saveSetting("progress_state_reset_beta17_at",os.time())
+        pcall(os.remove,data.."/readtime-recovery-v1.json")
+        startup_dirty=true
+        local actionable=0
+        for _,row in pairs(cleaned) do
+            if type(row)=="table" and (type(row.pending_progress)=="table"
+                or type(row.pending_progress_coordinate)=="table") then actionable=actionable+1 end
+        end
+        logger.warn("[MiuRead][StoreRepair] beta.17 progress control reset",
+            "books=",tostring(books),"fields=",tostring(fields),
+            "actionable_after_reset=",tostring(actionable),
+            "preserved=local_display/auth/books/annotations")
     end
     -- Do not rewrite miuread.lua on every plugin construction. Persist only a
     -- real first-run/default/schema migration, and never turn a settings write
@@ -2321,6 +2423,16 @@ function Store:invalidate_book_sync_context(id,reason,core_map_hash)
     self:flush()
     return true,row
 end
+function Store:reset_progress_sync_state(id,reason,flush_now)
+    local sessions=self:get("sessions",{}) or {}
+    local cleaned,books,fields=reset_progress_sync_sessions(sessions,reason or "manual_progress_sync_reset",id)
+    self.db:saveSetting("sessions",cleaned)
+    if flush_now~=false then self:flush("progress_sync_reset:"..tostring(id or "all")) end
+    logger.warn("[MiuRead][StoreRepair] progress sync state reset",
+        "book=",tostring(id or "all"),"books=",tostring(books),"fields=",tostring(fields),
+        "reason=",tostring(reason or "manual_progress_sync_reset"))
+    return books,fields
+end
 function Store:clear_session(id) local a=self:get("sessions",{}); a[tostring(id)]=nil; self:set("sessions",a) end
 function Store:shelf_cache() return U.merge(defaults.shelf_cache,self:get("shelf_cache",{})) end
 function Store:save_shelf_cache(v) return self:set("shelf_cache",U.merge(defaults.shelf_cache,v or {})) end
@@ -2439,13 +2551,34 @@ function Store:mark_read_report_consumed(stamp)
     self:set("read_report_consumed",rows)
 end
 local PROGRESS_SESSION_FIELDS={
-    "pending_progress","pending_progress_coordinate","progress_latest_sequence","progress_verified_sequence",
+    "progress_epoch","progress_state_reset_at","progress_state_reset_reason",
+    "pending_progress","pending_progress_coordinate","progress_latest_sequence","progress_verified_sequence","progress_verified_epoch",
     "progress_sync_state","progress_sync_message","progress_local_percent","progress_remote_percent","progress_decided_at",
     "progress_upload_state","progress_upload_error","progress_upload_pending_at","progress_upload_submitted_at","progress_upload_verified_at",
     "progress_upload_source","progress_upload_at","progress_upload_percent","progress_upload_chapter_uid",
     "progress_upload_co","progress_upload_remote_co","progress_worker_active","progress_worker_updated_at",
+    "progress_submission_phase","progress_resubmit_allowed","progress_last_verify_reason","progress_last_verify_at",
     "progress_resolution_choice","progress_resolution_fingerprint","progress_resolution_at",
+    "local_display_progress","local_display_progress_at","local_display_xpointer","local_display_progress_source",
+    "last_verified_exact_position","pending_unresolved_position","local_read_event_at",
 }
+
+-- Fields that belong to the synchronization control plane. When the on-disk
+-- progress_epoch is newer, these must be copied even when their value is nil:
+-- nil is exactly how a reset invalidates a stale pending transaction. Local
+-- display progress is intentionally excluded so a clean sync reset never moves
+-- the KOReader page/home display backward.
+local PROGRESS_EPOCH_CONTROL_FIELDS={
+    "progress_epoch","progress_state_reset_at","progress_state_reset_reason",
+    "pending_unresolved_position","local_read_event_at",
+}
+do
+    local seen={}
+    for _,field in ipairs(PROGRESS_EPOCH_CONTROL_FIELDS) do seen[field]=true end
+    for _,field in ipairs(PROGRESS_SYNC_RESET_KEYS) do
+        if not seen[field] then PROGRESS_EPOCH_CONTROL_FIELDS[#PROGRESS_EPOCH_CONTROL_FIELDS+1]=field; seen[field]=true end
+    end
+end
 
 local function progress_session_sequence(row)
     row=type(row)=="table" and row or {}
@@ -2465,7 +2598,10 @@ local function progress_session_stamp(row)
         tonumber(row.progress_decided_at or 0) or 0,
         tonumber(row.progress_upload_verified_at or 0) or 0,
         tonumber(row.progress_upload_pending_at or 0) or 0,
-        tonumber(row.progress_worker_updated_at or 0) or 0
+        tonumber(row.progress_worker_updated_at or 0) or 0,
+        tonumber(row.local_display_progress_at or 0) or 0,
+        tonumber(type(row.last_verified_exact_position)=="table" and row.last_verified_exact_position.saved_at or 0) or 0,
+        tonumber(type(row.pending_unresolved_position)=="table" and row.pending_unresolved_position.captured_at or 0) or 0
     )
 end
 
@@ -2489,24 +2625,34 @@ local function merge_newer_progress_sessions(memory_sessions,disk_sessions)
         if type(disk_row)=="table" then
             local memory_row=type(memory_sessions[id])=="table" and memory_sessions[id] or nil
             if memory_row then
+                local disk_epoch=math.max(1,tonumber(disk_row.progress_epoch or 1) or 1)
+                local memory_epoch=math.max(1,tonumber(memory_row.progress_epoch or 1) or 1)
                 local disk_seq=progress_session_sequence(disk_row)
                 local memory_seq=progress_session_sequence(memory_row)
                 local disk_rank=progress_session_rank(disk_row)
                 local memory_rank=progress_session_rank(memory_row)
                 local disk_stamp=progress_session_stamp(disk_row)
                 local memory_stamp=progress_session_stamp(memory_row)
-                -- Reader and Home can own separate Store instances. Never let
-                -- a stale Home flush resurrect an older pending progress state
-                -- after the Reader (or a detached worker) already verified a
-                -- newer/equally-new sequence on disk.
-                if disk_seq>memory_seq
+                -- beta.17: generation dominates sequence/rank. A reset advances
+                -- progress_epoch and intentionally drops sequence to zero. The
+                -- old beta.16 merge compared only sequence/rank, allowing a
+                -- stale Store with seq>0 to resurrect the just-deleted pending.
+                if disk_epoch>memory_epoch then
+                    for _,field in ipairs(PROGRESS_EPOCH_CONTROL_FIELDS) do
+                        memory_row[field]=U.copy(disk_row[field])
+                    end
+                    logger.info("[MiuRead][StoreRepair] stale progress generation suppressed",
+                        "book=",tostring(id),"memory_epoch=",tostring(memory_epoch),
+                        "disk_epoch=",tostring(disk_epoch),"memory_seq=",tostring(memory_seq))
+                elseif disk_epoch==memory_epoch and (disk_seq>memory_seq
                     or (disk_seq==memory_seq and disk_rank>memory_rank)
-                    or (disk_seq==memory_seq and disk_rank==memory_rank and disk_stamp>memory_stamp) then
+                    or (disk_seq==memory_seq and disk_rank==memory_rank and disk_stamp>memory_stamp)) then
                     for _,field in ipairs(PROGRESS_SESSION_FIELDS) do
                         memory_row[field]=U.copy(disk_row[field])
                     end
                 end
-            elseif progress_session_sequence(disk_row)>0 then
+            elseif progress_session_sequence(disk_row)>0
+                or (tonumber(disk_row.progress_epoch or 1) or 1)>1 then
                 memory_sessions[id]=U.copy(disk_row)
             end
         end

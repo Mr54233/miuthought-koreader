@@ -123,7 +123,8 @@ local function validate_anchor_source(coord_html, anchor)
     if not built_ok or type(map) ~= "table" then
         return nil, "source_map_build_failed"
     end
-    local range_key, locate_error = PosMap.locate(map, text, {
+    local locate_fn = type(PosMap.locateSource) == "function" and PosMap.locateSource or PosMap.locate
+    local range_key, locate_error = locate_fn(map, text, {
         context_before = tostring(anchor.context_before or ""),
         context_after = tostring(anchor.context_after or ""),
     })
@@ -201,8 +202,12 @@ local function fetch_coord_html(reader, record, anchor, options)
     }
     if book_arg.bookId == "" then return nil, nil, "book_id_missing" end
 
+    -- beta.18: precise local->WeRead conversion must not depend on the
+    -- book-scoped 240 s reader-context cache. A reused psvts is fine for bulk
+    -- downloading, but source-position mapping needs the target chapter's fresh
+    -- Web Reader page/context before deriving coord_html.
     local ok, downloaded, _, _, state = pcall(reader.chapter, reader,
-        book_arg, chapter, "epub", {images=false})
+        book_arg, chapter, "epub", {images=false, fresh_context=true})
     if not ok then
         local detail=tostring(downloaded or "")
         local access_denied=type(reader.is_access_denied_error)=="function"
@@ -226,7 +231,8 @@ local function fetch_coord_html(reader, record, anchor, options)
 
     logger.info("[MiuRead][ProgressSourceDiagnostic]",
         "stage=network_fetch", "book=", book_arg.bookId, "chapter=", uid,
-        "source_bytes=", tostring(#coord_html), "source_kind=network_refresh")
+        "source_bytes=", tostring(#coord_html), "source_kind=network_refresh",
+        "reader_context=fresh")
     local write_path = paths[1]
     if write_path then pcall(U.atomic_write, write_path, coord_html, true) end
     return coord_html, false, nil, {kind="network_refresh", path=write_path, version=version}
@@ -261,10 +267,28 @@ local function norm_count_before(map, text_boundary)
     return found
 end
 
+local function anchor_variants(anchor)
+    anchor = type(anchor) == "table" and anchor or {}
+    local rows = type(anchor.anchor_candidates) == "table" and anchor.anchor_candidates or nil
+    if not rows or #rows == 0 then return {anchor} end
+    local out = {}
+    for _, row in ipairs(rows) do
+        if type(row) == "table" and U.trim(tostring(row.anchor_text or "")) ~= "" then
+            local candidate = U.copy(anchor)
+            candidate.anchor_candidates = nil
+            for key, value in pairs(row) do candidate[key] = value end
+            out[#out + 1] = candidate
+        end
+    end
+    if #out == 0 then out[1] = anchor end
+    return out
+end
+
 local function locate_anchor(map, anchor)
     local text = U.trim(tostring(anchor.anchor_text or ""))
     if text == "" then return nil, "anchor_text_missing" end
-    local range_key, html_start, html_end_pos = PosMap.locate(map, text, {
+    local locate_fn = type(PosMap.locateSource) == "function" and PosMap.locateSource or PosMap.locate
+    local range_key, html_start, html_end_pos = locate_fn(map, text, {
         context_before = tostring(anchor.context_before or ""),
         context_after = tostring(anchor.context_after or ""),
     })
@@ -335,24 +359,75 @@ local function locate_single(reader, record, anchor, options)
         map = built
     end
 
-    local located, locate_error = locate_anchor(map, anchor)
-    if not located then
+    -- beta.19: try multiple immutable anchors captured around the exact same
+    -- XPointer. Every candidate still uses exact source text (plus formatting-
+    -- only normalization in PosMap.locateSource). If two successful anchors map
+    -- to different native Web Reader coordinates, fail closed instead of guessing.
+    local variants = anchor_variants(anchor)
+    local successes, distinct_native, errors = {}, {}, {}
+    for _, candidate in ipairs(variants) do
+        local located, locate_error = locate_anchor(map, candidate)
+        if located then
+            local native, native_error = WRCo.fromMap(map, located.html_boundary)
+            local native_ok = type(native) == "table" and tonumber(native.co) ~= nil
+            local row = {
+                anchor = candidate,
+                located = located,
+                native = native,
+                native_error = native_error,
+                native_ok = native_ok,
+            }
+            successes[#successes + 1] = row
+            if native_ok then
+                local co = math.max(0, math.floor(tonumber(native.co)))
+                row.native_co = co
+                distinct_native[tostring(co)] = true
+            end
+        else
+            errors[#errors + 1] = tostring(candidate.anchor_kind or "anchor") .. ":" .. tostring(locate_error or "not_found")
+        end
+    end
+
+    local distinct_count = 0
+    for _ in pairs(distinct_native) do distinct_count = distinct_count + 1 end
+    if distinct_count > 1 then
+        logger.warn("[MiuRead][ProgressSourceDiagnostic]",
+            "stage=anchor_consistency", "book=", tostring(type(record.book)=="table" and (record.book.book_id or record.book.bookId) or ""),
+            "chapter=", tostring(anchor.chapter_uid or ""), "result=coordinate_conflict",
+            "matches=", tostring(#successes), "distinct_native_co=", tostring(distinct_count))
+        return nil, "anchor_coordinate_conflict"
+    end
+
+    local selected
+    for _, row in ipairs(successes) do
+        if row.native_ok then selected = row; break end
+    end
+    selected = selected or successes[1]
+    if not selected then
         logger.warn("[MiuRead][ProgressSourceDiagnostic]",
             "stage=anchor_locate",
             "book=", tostring(type(record.book)=="table" and (record.book.book_id or record.book.bookId) or ""),
             "chapter=", tostring(anchor.chapter_uid or ""),
-            "error=", tostring(locate_error or "not_found"),
+            "error=", "not_found",
             "cache_kind=", tostring(cache_meta and cache_meta.kind or "unknown"),
             "cache_hit=", tostring(cache_hit==true),
             "source_bytes=", tostring(#coord_html),
-            "anchor_chars=", tostring(anchor.anchor_chars or 0),
-            "anchor_kind=", tostring(anchor.anchor_kind or ""),
-            "anchor_cross_chapter=", tostring(anchor.anchor_cross_chapter==true),
-            "anchor_title_nearby=", tostring(anchor.anchor_contains_chapter_title==true),
-            "anchor_start_toc=", tostring(anchor.anchor_start_toc_index or "-"),
-            "anchor_end_toc=", tostring(anchor.anchor_end_toc_index or "-"),
+            "anchor_candidates=", tostring(#variants),
+            "anchor_errors=", U.first_line(table.concat(errors, ","), 240),
             "network_allowed=", tostring(options.cache_only~=true))
-        return nil, locate_error
+        return nil, "not_found"
+    end
+
+    local chosen_anchor = selected.anchor
+    local located = selected.located
+    if tostring(chosen_anchor.anchor_kind or "") ~= tostring(anchor.anchor_kind or "") then
+        logger.info("[MiuRead][ProgressSourceAnchor]",
+            "book=", tostring(type(record.book)=="table" and (record.book.book_id or record.book.bookId) or ""),
+            "chapter=", tostring(anchor.chapter_uid or ""),
+            "recovered_by=", tostring(chosen_anchor.anchor_kind or "source_anchor"),
+            "primary=", tostring(anchor.anchor_kind or "source_anchor"),
+            "candidate_chars=", tostring(chosen_anchor.anchor_chars or 0),
+            "native_co=", tostring(selected.native_co or "-"))
     end
 
     local within = U.clamp(located.norm_before / located.norm_total, 0, 1)
@@ -364,12 +439,13 @@ local function locate_single(reader, record, anchor, options)
     local progress = (words > 0 and total_words > 0)
         and U.clamp(((words_before + source_word_offset) / total_words) * 100, 0, 100) or nil
 
-    local native, native_error = WRCo.fromMap(map, located.html_boundary)
-    local native_ok = type(native) == "table" and tonumber(native.co) ~= nil
+    local native = selected.native
+    local native_error = selected.native_error
+    local native_ok = selected.native_ok == true
     if not native_ok and progress == nil then
         return nil, "native_wr_co_unavailable_without_catalog"
     end
-    local offset = native_ok and math.max(0, math.floor(tonumber(native.co))) or source_word_offset
+    local offset = native_ok and selected.native_co or source_word_offset
 
     return {
         progress = progress,
@@ -414,8 +490,10 @@ local function locate_single(reader, record, anchor, options)
         source_wr_co_rune_boundary = native_ok and tonumber(native.rune_boundary) or nil,
         source_wr_co_utf16_extra = native_ok and tonumber(native.utf16_extra) or nil,
         source_wr_co_error = native_ok and nil or tostring(native_error or "wr_co_unavailable"),
-        precision_anchor = tostring(anchor.anchor_kind or "source_anchor"),
-        precision_anchor_chars = tonumber(anchor.anchor_chars) or 0,
+        precision_anchor = tostring(chosen_anchor.anchor_kind or "source_anchor"),
+        precision_anchor_chars = tonumber(chosen_anchor.anchor_chars) or 0,
+        precision_anchor_candidates = #variants,
+        precision_anchor_recovered = tostring(chosen_anchor.anchor_kind or "") ~= tostring(anchor.anchor_kind or ""),
     }
 end
 

@@ -316,6 +316,152 @@ function PosMap.locate(map, mark_text, opts)
 end
 
 
+-- beta.19 progress-source matching deliberately has a slightly more tolerant
+-- *formatting* view than annotation matching. It still performs exact rune
+-- equality; only characters that have no visible reading semantics are ignored.
+-- Keeping this opt-in prevents annotation ranges from silently changing.
+local SOURCE_IGNORABLE = {
+    ["\194\160"] = true, -- NBSP
+    ["\194\173"] = true, -- soft hyphen
+    ["\226\128\139"] = true, -- zero width space
+    ["\226\128\140"] = true, -- zero width non-joiner
+    ["\226\128\141"] = true, -- zero width joiner
+    ["\226\129\160"] = true, -- word joiner
+    ["\239\187\191"] = true, -- BOM / zero width no-break space
+}
+
+local function sourceIgnorable(r)
+    return r == "*" or (type(r) == "string" and (r:match("%s") ~= nil or SOURCE_IGNORABLE[r] == true))
+end
+
+local function sourceNorm(map)
+    if type(map) ~= "table" then return nil, nil, nil end
+    if type(map.source_norm_text) == "string" and type(map.source_norm_map) == "table"
+        and type(map.source_norm_byte_map) == "table" then
+        return map.source_norm_text, map.source_norm_byte_map, map.source_norm_map
+    end
+    local norm_runes, norm_map, norm_byte_map = {}, {}, {}
+    local byte_pos = 1
+    for i, r in ipairs(map.text_runes or {}) do
+        if not sourceIgnorable(r) then
+            norm_runes[#norm_runes + 1] = r
+            norm_map[#norm_runes] = i
+            norm_byte_map[byte_pos] = #norm_runes
+            byte_pos = byte_pos + #r
+        end
+    end
+    map.source_norm_text = table.concat(norm_runes)
+    map.source_norm_map = norm_map
+    map.source_norm_byte_map = norm_byte_map
+    return map.source_norm_text, norm_byte_map, norm_map
+end
+
+local function sourceCleanRunes(value)
+    local out = {}
+    for _, r in ipairs(Runes.toRunes(tostring(value or ""))) do
+        if not sourceIgnorable(r) then out[#out + 1] = r end
+    end
+    return out
+end
+
+local function findAllSourceNorm(map, needle)
+    local norm_text, norm_byte_map, norm_map = sourceNorm(map)
+    local cleaned = table.concat(sourceCleanRunes(needle))
+    local hits = {}
+    if cleaned == "" or type(norm_text) ~= "string" or norm_text == "" or #cleaned > #norm_text then
+        return hits
+    end
+    local from = 1
+    while true do
+        local i = norm_text:find(cleaned, from, true)
+        if not i then break end
+        local idx = norm_byte_map[i]
+        local rune_i = idx and norm_map[idx]
+        if rune_i then hits[#hits + 1] = rune_i end
+        from = i + 1
+    end
+    return hits
+end
+
+local function resolveSourceHitToSpan(map, rune_i, mark_text)
+    local needle = sourceCleanRunes(mark_text)
+    if #needle == 0 then return nil end
+    local consumed, pos, last_consumed = 0, rune_i, rune_i
+    while consumed < #needle and pos <= #(map.text_runes or {}) do
+        local r = map.text_runes[pos]
+        if not sourceIgnorable(r) then
+            if r ~= needle[consumed + 1] then return nil end
+            consumed = consumed + 1
+            last_consumed = pos
+        end
+        pos = pos + 1
+    end
+    if consumed ~= #needle then return nil end
+    return rune_i, last_consumed + 1
+end
+
+local function pickSourceHit(hits, map, needle, context_before, context_after)
+    if #hits == 0 then return nil end
+    if #hits == 1 then return hits[1] end
+
+    local expect_b = sourceCleanRunes(context_before)
+    local expect_a = sourceCleanRunes(context_after)
+    if #expect_b == 0 and #expect_a == 0 then return nil, "ambiguous" end
+    local scored = {}
+    local runes = map.text_runes or {}
+    for _, rune_i in ipairs(hits) do
+        local _, text_end_pos = resolveSourceHitToSpan(map, rune_i, needle)
+        if text_end_pos then
+            local before, after = {}, {}
+            local k = rune_i - 1
+            while k >= 1 and #before < #expect_b do
+                local r = runes[k]
+                if not sourceIgnorable(r) then table.insert(before, 1, r) end
+                k = k - 1
+            end
+            k = text_end_pos
+            while k <= #runes and #after < #expect_a do
+                local r = runes[k]
+                if not sourceIgnorable(r) then after[#after + 1] = r end
+                k = k + 1
+            end
+            local ok = #before == #expect_b and #after == #expect_a
+            if ok then
+                for i = 1, #expect_b do if before[i] ~= expect_b[i] then ok = false; break end end
+            end
+            if ok then
+                for i = 1, #expect_a do if after[i] ~= expect_a[i] then ok = false; break end end
+            end
+            if ok then scored[#scored + 1] = rune_i end
+        end
+    end
+    if #scored == 1 then return scored[1] end
+    return nil, "ambiguous"
+end
+
+--- Progress-source-only exact locator. It ignores only formatting-only runes
+-- (NBSP / zero-width / soft-hyphen / BOM) in addition to ordinary whitespace
+-- and wr-star. No edit distance, case folding, punctuation folding, or fuzzy
+-- similarity is permitted.
+function PosMap.locateSource(map, mark_text, opts)
+    opts = opts or {}
+    if not map or type(mark_text) ~= "string" then return nil, "invalid" end
+    mark_text = util.trim(mark_text)
+    if mark_text == "" then return nil, "empty" end
+
+    local hits = findAllSourceNorm(map, mark_text)
+    local rune_i, err = pickSourceHit(hits, map, mark_text, opts.context_before, opts.context_after)
+    if not rune_i then return nil, err or "not_found" end
+    local text_start, text_end_pos = resolveSourceHitToSpan(map, rune_i, mark_text)
+    if not text_start then return nil, "bad_align" end
+    local html_start, html_end_pos = PosMap.textToHtml(map, text_start, text_end_pos)
+    if not html_start then return nil, "map_fail" end
+    local range_str = Range.encode(html_start, html_end_pos, opts.page_review == true)
+    if not range_str then return nil, "encode_fail" end
+    return range_str, html_start, html_end_pos
+end
+
+
 --- 便捷：直接对 HTML 定位（内部 build）。
 function PosMap.locateInHtml(html, mark_text, opts)
     return PosMap.locate(PosMap.build(html), mark_text, opts)

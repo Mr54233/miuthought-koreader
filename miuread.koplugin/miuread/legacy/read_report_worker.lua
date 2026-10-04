@@ -481,10 +481,13 @@ local function normalize_cloud_anchor(anchor, book)
         or book.remote_chapter_idx or book.chapter_idx)
     local offset = tonumber(anchor.chapter_offset or anchor.offset or anchor.chapterOffset
         or book.remote_chapter_offset)
-    -- beta.5: reading-time context consumes canonical progress only. Raw server
-    -- percent is diagnostic and may legitimately disagree with chapter/co.
-    local progress = tonumber(anchor.canonical_progress or anchor.calculated_percent or anchor.progress
-        or anchor.protocol_progress or book.canonical_progress)
+    -- beta.15: reading-time compatibility is a wire echo, not a canonical
+    -- progress calculation. Prefer the exact protocol progress returned by the
+    -- server together with its chapterUid/co; this prevents a stale/local
+    -- canonical anchor from rewriting a newer cloud position.
+    local progress = tonumber(anchor.protocol_progress or anchor.raw_progress or anchor.raw_percent
+        or anchor.progress or anchor.canonical_progress or anchor.calculated_percent
+        or book.remote_raw_progress)
     if tostring(uid or "") == "" or offset == nil or progress == nil then return nil end
     return {
         chapter_uid = uid,
@@ -753,18 +756,15 @@ function Worker.run(job)
     local protocol_time_only = job.time_only == true and not reading_time_compat
     local position_override
     if reading_time_compat then
-        -- A reading-time report must never invent/recalculate a new cloud position.
-        -- Prefer the immutable anchor supplied by the parent. If this is the first
-        -- report for a book and no parent anchor exists yet, refresh the Web Reader
-        -- cloud position and repeat that exact position while only changing `rt`.
-        position_override = normalize_cloud_anchor(job.cloud_anchor, book)
-        if not position_override then
-            refresh_remote_anchor(client, book_id, book)
-            position_override = normalize_cloud_anchor(nil, book)
-        end
+        -- beta.15 integrity rule: every compatibility time write first GETs the
+        -- current server position and then echoes that exact wire coordinate in
+        -- the POST. Never fall back to a cached/local/pending anchor when the GET
+        -- fails; dropping one time interval is safer than reverting cloud progress.
+        local refreshed=refresh_remote_anchor(client, book_id, book)
+        if refreshed then position_override = normalize_cloud_anchor(nil, book) end
         if not position_override then
             return finish(settings, book, {
-                ok=false,error="cloud reading position unavailable for reading-time report",error_kind="context",
+                ok=false,error="fresh cloud reading position unavailable for reading-time report",error_kind="context",
                 meta={request_dispatched=false},
             }, context_changed)
         end

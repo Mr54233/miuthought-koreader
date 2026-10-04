@@ -440,9 +440,11 @@ local function hero_card(book, width, height, callback, compact, hold_callback, 
         height_overflow_show_ellipsis = true, fgcolor = Blitbuffer.COLOR_BLACK,
     }
 
-    local progress_value = math.max(0, math.min(100, tonumber(book.progress) or 0))
-    local progress_number = string.format("%.1f", progress_value):gsub("%.0$", "")
-    local progress_label = "阅读进度 " .. progress_number .. "%"
+    local progress_number_value = tonumber(book.progress)
+    local progress_known = book.progress_known~=false and progress_number_value~=nil
+    local progress_value = progress_known and math.max(0, math.min(100, progress_number_value)) or 0
+    local progress_number = progress_known and string.format("%.1f", progress_value):gsub("%.0$", "") or "—"
+    local progress_label = progress_known and ("阅读进度 " .. progress_number .. "%") or "阅读进度 —"
     local progress_label_h = math.max(UiScale.dp(18, 16, 25), math.floor(progress_h * .52))
     local progress_slot_h = math.max(1, progress_h - progress_label_h)
     local progress_track_h = math.max(UiScale.line("thick"), UiScale.dp(3, 2, 5))
@@ -608,7 +610,8 @@ local function shelf_book_card(book, width, height, callback, hold_callback)
     end
     local pad = math.max(UiScale.dp(1, 0, 2), math.floor(width * .004))
     local inner_w = math.max(1, width - pad * 2)
-    local progress = math.max(0, math.min(100, tonumber(book.progress) or 0))
+    local progress_known = book.progress_known~=false and tonumber(book.progress)~=nil
+    local progress = progress_known and math.max(0, math.min(100, tonumber(book.progress))) or 0
     local status = U.trim(tostring(book.status_text or ""))
     local downloaded = status == "已生成" or status == "已下载" or book.generated == true
         or book.downloaded == true or tostring(book.shelf_section or "") == "generated"
